@@ -33,12 +33,14 @@ Set the backend's `FRONTEND_ORIGIN` environment variable to the exact browser or
 
 The frontend uses:
 
-- `GET /api/health` to show whether the API process is reachable.
+- `GET /api/health` to show API availability and whether Neo4j is reachable.
 - `GET /api/conversations` and `GET /api/conversations/{id}` to list and load stored chats.
 - `POST /api/conversations` and `DELETE /api/conversations/{id}` to create and remove chats.
 - `POST /api/chat` with `{ message, conversation_id }` to send a question; history is loaded by the backend from SQLite.
 
-The health indicator only reflects API availability. It does not verify that Gemini credentials, Neo4j, or the ChromaDB collection are ready to serve a research query.
+The health indicator distinguishes an unavailable backend from an unavailable knowledge graph. If Neo4j cannot be reached, the UI displays a warning and chat requests return an explicit error instead of generating an answer from vector results alone. Health checks do not verify Gemini credentials or ChromaDB readiness.
+
+Each saved assistant response includes an expandable **Retrieval evidence** section with each generated/fallback Cypher query and row count, rejected-query details, fallback search terms, returned graph rows, and vector-search paper IDs, titles, dates, and excerpts. Findings cite only IDs returned by those sources. This allows you to inspect what was retrieved; it does not by itself prove that a passage entails a generated claim, so verify important conclusions against the original papers.
 
 ## Features and Data
 

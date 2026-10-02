@@ -30,12 +30,18 @@ import {
   listConversations,
   removeConversation as removeConversationRequest,
   sendChatMessage,
+  ApiRequestError,
   type ChatTurn,
   type ConversationSummary,
+  type RetrievalTrace,
   type StoredMessage,
 } from "./lib/api";
 
-type Message = StoredMessage | (ChatTurn & { id: string; created_at: string });
+type Message = ChatTurn & {
+  id: number | string;
+  created_at: string;
+  retrieval?: RetrievalTrace | null;
+};
 const suggestions = [
   "What are the current approaches to retrieval-augmented generation?",
   "Find papers connecting graph neural networks and scientific discovery.",
@@ -49,6 +55,7 @@ function App() {
   const [draft, setDraft] = useState("");
   const [busy, setBusy] = useState(false);
   const [apiOnline, setApiOnline] = useState<boolean | null>(null);
+  const [graphAvailable, setGraphAvailable] = useState<boolean | null>(null);
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -58,8 +65,15 @@ function App() {
 
   useEffect(() => {
     let mounted = true;
-    checkApi().then((online) => {
-      if (mounted) setApiOnline(online);
+    checkApi().then((health) => {
+      if (!mounted) return;
+      setApiOnline(health.apiAvailable);
+      setGraphAvailable(health.graphAvailable);
+      if (health.apiAvailable && !health.graphAvailable) {
+        setError(
+          "The knowledge graph is unavailable. New queries will be rejected until Neo4j is reachable.",
+        );
+      }
     });
     listConversations()
       .then(async (savedConversations) => {
@@ -200,13 +214,24 @@ function App() {
         response.assistant_message,
       ]);
       setApiOnline(true);
+      setGraphAvailable(true);
     } catch (caught) {
       setError(
         caught instanceof Error
           ? caught.message
           : "Something went wrong while contacting ScholarGraph.",
       );
-      setApiOnline(false);
+      if (caught instanceof ApiRequestError) {
+        setApiOnline(true);
+        if (
+          caught.status === 503 &&
+          caught.message.toLowerCase().includes("knowledge graph")
+        ) {
+          setGraphAvailable(false);
+        }
+      } else {
+        setApiOnline(false);
+      }
     } finally {
       setBusy(false);
     }
@@ -303,17 +328,19 @@ function App() {
               <Database size={16} />
             </div>
             <div className="connection-copy">
-              <strong>Backend API</strong>
+              <strong>Knowledge graph</strong>
               <span>
                 {apiOnline === null
                   ? "Checking connection"
-                  : apiOnline
-                    ? "Ready to receive queries"
-                    : "Offline · start the API"}
+                  : !apiOnline
+                    ? "Backend unavailable"
+                    : graphAvailable
+                      ? "Neo4j available"
+                      : "Neo4j unavailable · responses paused"}
               </span>
             </div>
             <span
-              className={`status-dot ${apiOnline ? "online" : apiOnline === false ? "offline" : ""}`}
+              className={`status-dot ${apiOnline && graphAvailable ? "online" : apiOnline === false || graphAvailable === false ? "offline" : ""}`}
             />
           </div>
           <div className="local-note">
@@ -443,6 +470,100 @@ function App() {
                         message.content
                       )}
                     </div>
+                    {message.role === "assistant" && message.retrieval && (
+                      <details className="retrieval-evidence">
+                        <summary>
+                          <span>Retrieval evidence</span>
+                          <span className="retrieval-counts">
+                            Neo4j {message.retrieval.graph_result_count} rows
+                            <span aria-hidden="true"> · </span>
+                            ChromaDB {message.retrieval.vector_hit_count} papers
+                          </span>
+                        </summary>
+                        <div className="retrieval-body">
+                          <section className="retrieval-section">
+                            <h4>Knowledge graph</h4>
+                            {message.retrieval.graph_queries.map(
+                              (attempt, index) => (
+                                <details
+                                  className="retrieval-query"
+                                  key={`${attempt.kind}-${index}`}
+                                >
+                                  <summary>
+                                    {attempt.kind} · {attempt.result_count} rows
+                                  </summary>
+                                  <pre>
+                                    <code>{attempt.cypher}</code>
+                                  </pre>
+                                  {attempt.error && (
+                                    <p className="retrieval-note">
+                                      {attempt.error}
+                                    </p>
+                                  )}
+                                  {attempt.parameters?.terms && (
+                                    <p className="retrieval-note">
+                                      Search terms:{" "}
+                                      {String(attempt.parameters.terms)}
+                                    </p>
+                                  )}
+                                </details>
+                              ),
+                            )}
+                            {message.retrieval.graph_results_truncated && (
+                              <p className="retrieval-note">
+                                Showing the first 20 of{" "}
+                                {message.retrieval.graph_result_count} graph
+                                rows.
+                              </p>
+                            )}
+                            {message.retrieval.graph_records.length === 0 ? (
+                              <p className="retrieval-note">
+                                The graph traversal ran but returned no matching
+                                rows.
+                              </p>
+                            ) : (
+                              <div className="graph-records">
+                                {message.retrieval.graph_records.map(
+                                  (record, index) => (
+                                    <details
+                                      className="graph-record"
+                                      key={index}
+                                    >
+                                      <summary>Graph row {index + 1}</summary>
+                                      <pre>
+                                        <code>
+                                          {JSON.stringify(record, null, 2)}
+                                        </code>
+                                      </pre>
+                                    </details>
+                                  ),
+                                )}
+                              </div>
+                            )}
+                          </section>
+                          <section className="retrieval-section">
+                            <h4>Retrieved papers</h4>
+                            {message.retrieval.vector_sources.map((source) => (
+                              <article
+                                className="retrieval-source"
+                                key={source.paper_id}
+                              >
+                                <strong>
+                                  {source.title ?? "Untitled paper"}
+                                </strong>
+                                <span>
+                                  [{source.paper_id}]
+                                  {source.published
+                                    ? ` · ${source.published}`
+                                    : ""}
+                                </span>
+                                <p>{source.excerpt}</p>
+                              </article>
+                            ))}
+                          </section>
+                        </div>
+                      </details>
+                    )}
                   </div>
                   {message.role === "user" && (
                     <div className="user-avatar">Y</div>

@@ -648,6 +648,120 @@ textarea:focus-visible {
   border: 0;
   background: #dfe4db;
 }
+.retrieval-evidence {
+  margin-top: 15px;
+  border-top: 1px solid #e0e5dc;
+  color: #48574c;
+  font-size: 12px;
+}
+.retrieval-evidence > summary,
+.retrieval-query > summary,
+.graph-record > summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 2px;
+  color: #3f5c49;
+  font-weight: 600;
+  cursor: pointer;
+  list-style: none;
+}
+.retrieval-evidence > summary::-webkit-details-marker,
+.retrieval-query > summary::-webkit-details-marker,
+.graph-record > summary::-webkit-details-marker {
+  display: none;
+}
+.retrieval-evidence > summary::before,
+.retrieval-query > summary::before,
+.graph-record > summary::before {
+  content: "+";
+  display: grid;
+  place-items: center;
+  width: 17px;
+  height: 17px;
+  border: 1px solid #bdcbbd;
+  border-radius: 50%;
+  color: #52745c;
+  font-size: 12px;
+  line-height: 1;
+}
+.retrieval-evidence[open] > summary::before,
+.retrieval-query[open] > summary::before,
+.graph-record[open] > summary::before {
+  content: "-";
+}
+.retrieval-counts {
+  margin-left: auto;
+  color: #657369;
+  font-size: 11px;
+  font-weight: 400;
+}
+.retrieval-body {
+  display: grid;
+  gap: 15px;
+  padding: 2px 0 12px 25px;
+}
+.retrieval-section h4 {
+  margin: 4px 0 6px;
+  color: #34483a;
+  font-size: 12px;
+  font-weight: 700;
+}
+.retrieval-query > summary,
+.graph-record > summary {
+  padding: 6px 0;
+  color: #53645a;
+  font-size: 11px;
+  font-weight: 500;
+}
+.retrieval-evidence pre {
+  max-height: 220px;
+  overflow: auto;
+  margin: 4px 0 8px;
+  padding: 9px 11px;
+  border: 1px solid #dce2d8;
+  border-radius: 6px;
+  background: #f0f2ec;
+  color: #34443a;
+  font-size: 11px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.retrieval-evidence pre code {
+  padding: 0;
+  background: transparent;
+  color: inherit;
+  font-size: inherit;
+}
+.retrieval-note {
+  margin: 5px 0;
+  color: #68766b;
+  font-size: 11px;
+}
+.graph-record {
+  border-top: 1px solid #e5e8e1;
+}
+.retrieval-source {
+  display: grid;
+  gap: 4px;
+  padding: 9px 0;
+  border-top: 1px solid #e5e8e1;
+}
+.retrieval-source strong {
+  color: #30463a;
+  font-size: 12px;
+}
+.retrieval-source span {
+  color: #5d6d60;
+  font-size: 10px;
+}
+.retrieval-source p {
+  margin: 2px 0 0;
+  color: #46544a;
+  font-size: 11px;
+  line-height: 1.6;
+}
 .user .message-content {
   padding: 12px 15px;
   border: 1px solid #dce7dc;

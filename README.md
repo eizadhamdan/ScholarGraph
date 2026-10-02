@@ -116,11 +116,11 @@ The landing page offers example queries, a query box, and access to previous con
 
 ![ScholarGraph landing page](pictures/picture_1.png)
 
-### Example: Graph neural networks
+### Example 1: 
 
 ![ScholarGraph response about graph neural networks](pictures/picture_2.png)
 
-### Example: Retrieval-augmented generation
+### Example 2: 
 
 ![ScholarGraph response about retrieval-augmented generation](pictures/picture_3.png)
 

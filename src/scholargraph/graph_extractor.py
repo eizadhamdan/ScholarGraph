@@ -1,4 +1,3 @@
-# LLM extraction logic
 import argparse
 import json
 from google import genai
@@ -14,16 +13,23 @@ class DeepConcepts(BaseModel):
 
 
 def extract_graph_triples(
-    input_path: str, output_path: str, llm_sample_limit: int = 500
+    input_path: str, output_path: str, llm_sample_limit: int = 200
 ):
     """Extracts structural and semantic entity triples from raw paper JSON."""
-    client = genai.Client(api_key=GEMINI_API_KEY)
 
-    with open(input_path, "r") as f:
+    with open(input_path, "r", encoding="utf-8") as f:
         papers = json.load(f)
 
+    # Initialize Gemini client if key exists
+    client = None
+    if GEMINI_API_KEY:
+        try:
+            client = genai.Client(api_key=GEMINI_API_KEY)
+        except Exception as e:
+            print(f"[Warning] Could not initialize Gemini Client: {e}")
+
     graph_data = []
-    print(f"Extracting relationships for {len(papers)} papers...")
+    print(f"Generating graph triples for {len(papers)} papers...")
 
     for i, paper in enumerate(tqdm(papers)):
         paper_id = paper["id"]
@@ -34,27 +40,27 @@ def extract_graph_triples(
 
         relationships = []
 
-        # Metadata Triples: Author -> AUTHORED -> Paper
+        # 1. Author -> AUTHORED -> Paper
         for author in authors:
             relationships.append(
                 {"subject": author, "predicate": "AUTHORED", "object": paper_id}
             )
 
-        # Metadata Triples: Paper -> IN_CATEGORY -> Category
+        # 2. Paper -> IN_CATEGORY -> Category
         for cat in categories:
             relationships.append(
                 {"subject": paper_id, "predicate": "IN_CATEGORY", "object": cat}
             )
 
-        # LLM Concept Extraction for top N abstracts
-        concepts = []
-        if i < llm_sample_limit and summary:
-            prompt = (
-                f"Title: {title}\nAbstract: {summary}\nExtract core techniques/models."
-            )
+        # 3. Use OpenAlex Concepts as baseline concepts
+        concepts = list(categories)
+
+        # 4. LLM Concept Extraction via Gemini (Enrichment)
+        if client and i < llm_sample_limit and summary:
+            prompt = f"Title: {title}\nAbstract: {summary}\nExtract 3-5 core AI techniques/methods/architectures."
             try:
                 response = client.models.generate_content(
-                    model="gemini-2.5-flash",
+                    model="gemini-3.5-flash-lite",
                     contents=prompt,
                     config={
                         "response_mime_type": "application/json",
@@ -62,33 +68,40 @@ def extract_graph_triples(
                     },
                 )
                 extracted = json.loads(response.text)
-                concepts = extracted.get("methods_and_models", [])
+                llm_concepts = extracted.get("methods_and_models", [])
 
-                for concept in concepts:
-                    relationships.append(
-                        {
-                            "subject": paper_id,
-                            "predicate": "USES_METHOD",
-                            "object": concept,
-                        }
-                    )
-            except Exception:
-                pass
+                # Combine LLM concepts with OpenAlex categories
+                concepts = list(set(concepts + llm_concepts))
+            except Exception as e:
+                # Print error on first failure to debug API issue
+                if i == 0:
+                    print(f"\n[Gemini API Error] Paper {paper_id}: {e}")
+
+        # Add Concept Relationships
+        for concept in concepts:
+            relationships.append(
+                {
+                    "subject": paper_id,
+                    "predicate": "USES_METHOD",
+                    "object": concept,
+                }
+            )
 
         graph_data.append(
             {
                 "paper_id": paper_id,
                 "title": title,
                 "authors": authors,
+                "categories": categories,
                 "concepts": concepts,
                 "relationships": relationships,
             }
         )
 
-    with open(output_path, "w") as f:
+    with open(output_path, "w", encoding="utf-8") as f:
         json.dump(graph_data, f, indent=2)
 
-    print(f"Saved graph triples to {output_path}")
+    print(f"\nSuccessfully saved updated graph triples to {output_path}")
 
 
 if __name__ == "__main__":
@@ -108,7 +121,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--llm-limit",
         type=int,
-        default=500,
+        default=200,
         help="Limit LLM extraction calls",
     )
     args = parser.parse_args()

@@ -1,5 +1,6 @@
 # ChromaDB interface & operations
 import argparse
+from functools import lru_cache
 import chromadb
 import pandas as pd
 from sentence_transformers import SentenceTransformer
@@ -8,6 +9,11 @@ from scholargraph.config import CHROMA_PERSIST_DIR, EMBEDDING_MODEL_NAME
 
 def get_chroma_client():
     return chromadb.PersistentClient(path=CHROMA_PERSIST_DIR)
+
+
+@lru_cache(maxsize=1)
+def get_embedding_model():
+    return SentenceTransformer(EMBEDDING_MODEL_NAME)
 
 
 def import_parquet_to_chroma(parquet_path: str):
@@ -47,8 +53,9 @@ def query_vector_store(query_text: str, n_results: int = 5) -> list[dict]:
     client = get_chroma_client()
     collection = client.get_collection(name="arxiv_papers")
 
-    model = SentenceTransformer(EMBEDDING_MODEL_NAME)
-    query_embedding = model.encode([query_text], normalize_embeddings=True).tolist()
+    query_embedding = (
+        get_embedding_model().encode([query_text], normalize_embeddings=True).tolist()
+    )
 
     results = collection.query(query_embeddings=query_embedding, n_results=n_results)
 

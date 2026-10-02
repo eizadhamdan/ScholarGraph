@@ -133,6 +133,8 @@ celerybeat.pid
 env/
 venv/
 ENV/
+frontend/node_modules/
+frontend/dist/
 env.bak/
 venv.bak/
 

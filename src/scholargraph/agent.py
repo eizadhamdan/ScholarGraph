@@ -32,7 +32,11 @@ class ScholarGraphAgent:
         )
         return response.text.replace("```cypher", "").replace("```", "").strip()
 
-    def run(self, user_query: str) -> str:
+    def run(
+        self,
+        user_query: str,
+        conversation_history: list[dict[str, str]] | None = None,
+    ) -> str:
         """Agent execution flow routing between Cypher graph traversal, vector search, and answer synthesis."""
         print(f"\n[Agent Thinking] Analyzing query: '{user_query}'...")
 
@@ -46,9 +50,13 @@ class ScholarGraphAgent:
         vector_results = query_vector_store(user_query, n_results=3)
 
         # Step 3: Synthesis Phase
+        history_context = json.dumps((conversation_history or [])[-12:], indent=2)
         synthesis_prompt = f"""
         You are ScholarGraph, an expert academic research assistant.
         Answer the user's question using the retrieved context from both our Graph Database (Neo4j) and Vector Database (ChromaDB).
+
+        RECENT CONVERSATION:
+        {history_context}
 
         USER QUERY: {user_query}
 

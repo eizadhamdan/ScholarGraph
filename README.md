@@ -72,11 +72,17 @@ ScholarGraph/
         ├── vector_store.py       # ChromaDB interface & operations
         ├── graph_store.py        # Neo4j interface & Cypher execution
         ├── agent.py              # LangGraph orchestration engine
+        ├── api.py                # FastAPI HTTP interface for the frontend
         ├── main.py               # Application entry point / CLI interface
         └── tools/
             ├── __init__.py
             ├── cypher_tool.py    # Neo4j graph retrieval tool
             └── vector_tool.py    # ChromaDB vector retrieval tool
+    ├── frontend/                     # Independent React + Vite client
+    │   └── src/
+    │       ├── App.tsx
+    │       ├── lib/api.ts            # Typed API client
+    │       └── styles.css
 
 ```
 
@@ -149,6 +155,25 @@ Launch the CLI interface to query your hybrid GraphRAG agent:
 python -m scholargraph.main
 
 ```
+
+### Step 4: Run the web application
+
+The Python package remains the backend, and the React client lives in `frontend/`. Start the API from the repository root in one terminal:
+
+```powershell
+python -m pip install -r requirements.txt
+uvicorn scholargraph.api:app --app-dir src --reload
+```
+
+Then start the frontend in a second terminal:
+
+```powershell
+cd frontend
+npm install
+npm run dev
+```
+
+Open <http://localhost:5173>. Vite proxies `/api` requests to the backend at `http://127.0.0.1:8000`. The API uses the root `.env` for Gemini and Neo4j configuration; Neo4j must be running and the graph and vector stores must be populated as described above. Chat history is stored in the browser. For a separately hosted API, set `VITE_API_URL` in the frontend environment and `FRONTEND_ORIGIN` for backend CORS.
 
 ---
 

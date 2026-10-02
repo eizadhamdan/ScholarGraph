@@ -21,45 +21,31 @@ import {
   X,
 } from "lucide-react";
 import type { MouseEvent } from "react";
-import { checkApi, sendChatMessage, type ChatTurn } from "./lib/api";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
+import {
+  checkApi,
+  createConversation,
+  getConversation,
+  listConversations,
+  removeConversation as removeConversationRequest,
+  sendChatMessage,
+  type ChatTurn,
+  type ConversationSummary,
+  type StoredMessage,
+} from "./lib/api";
 
-type Message = ChatTurn & {
-  id: string;
-  createdAt: number;
-};
-
-type Conversation = {
-  id: string;
-  title: string;
-  updatedAt: number;
-  messages: Message[];
-};
-
-const storageKey = "scholargraph.conversations.v1";
+type Message = StoredMessage | (ChatTurn & { id: string; created_at: string });
 const suggestions = [
   "What are the current approaches to retrieval-augmented generation?",
   "Find papers connecting graph neural networks and scientific discovery.",
   "Compare the methods used for long-context language models.",
 ];
 
-function readConversations(): Conversation[] {
-  try {
-    const saved = localStorage.getItem(storageKey);
-    return saved ? (JSON.parse(saved) as Conversation[]) : [];
-  } catch {
-    return [];
-  }
-}
-
-function makeMessage(role: Message["role"], content: string): Message {
-  return { id: crypto.randomUUID(), role, content, createdAt: Date.now() };
-}
-
 function App() {
-  const [conversations, setConversations] = useState(readConversations);
-  const [activeId, setActiveId] = useState<string | null>(
-    () => readConversations()[0]?.id ?? null,
-  );
+  const [conversations, setConversations] = useState<ConversationSummary[]>([]);
+  const [activeId, setActiveId] = useState<string | null>(null);
+  const [messages, setMessages] = useState<Message[]>([]);
   const [draft, setDraft] = useState("");
   const [busy, setBusy] = useState(false);
   const [apiOnline, setApiOnline] = useState<boolean | null>(null);
@@ -69,17 +55,34 @@ function App() {
   const bottomRef = useRef<HTMLDivElement>(null);
 
   const activeConversation = conversations.find(({ id }) => id === activeId);
-  const messages = activeConversation?.messages ?? [];
-
-  useEffect(() => {
-    localStorage.setItem(storageKey, JSON.stringify(conversations));
-  }, [conversations]);
 
   useEffect(() => {
     let mounted = true;
     checkApi().then((online) => {
       if (mounted) setApiOnline(online);
     });
+    listConversations()
+      .then(async (savedConversations) => {
+        if (!mounted) return;
+        setConversations(savedConversations);
+        if (savedConversations.length > 0) {
+          const latest = await getConversation(savedConversations[0].id);
+          if (mounted) {
+            setActiveId(latest.id);
+            setMessages(latest.messages);
+          }
+        }
+      })
+      .catch((caught: unknown) => {
+        if (mounted) {
+          setApiOnline(false);
+          setError(
+            caught instanceof Error
+              ? caught.message
+              : "Could not load saved conversations.",
+          );
+        }
+      });
     return () => {
       mounted = false;
     };
@@ -87,9 +90,14 @@ function App() {
 
   useEffect(() => {
     function handleNewConversationShortcut(event: globalThis.KeyboardEvent) {
-      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "k") {
+      if (
+        !busy &&
+        (event.ctrlKey || event.metaKey) &&
+        event.key.toLowerCase() === "k"
+      ) {
         event.preventDefault();
         setActiveId(null);
+        setMessages([]);
         setDraft("");
         setError(null);
         setMobileNavOpen(false);
@@ -100,24 +108,59 @@ function App() {
     window.addEventListener("keydown", handleNewConversationShortcut);
     return () =>
       window.removeEventListener("keydown", handleNewConversationShortcut);
-  }, []);
+  }, [busy]);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
   }, [messages.length, busy]);
 
   function startConversation() {
+    if (busy) return;
     setActiveId(null);
+    setMessages([]);
     setDraft("");
     setError(null);
     setMobileNavOpen(false);
     textareaRef.current?.focus();
   }
 
-  function removeConversation(event: MouseEvent, id: string) {
+  async function openConversation(id: string) {
+    if (busy) return;
+    setBusy(true);
+    setError(null);
+    setMobileNavOpen(false);
+    try {
+      const conversation = await getConversation(id);
+      setActiveId(conversation.id);
+      setMessages(conversation.messages);
+    } catch (caught) {
+      setError(
+        caught instanceof Error
+          ? caught.message
+          : "Could not load this conversation.",
+      );
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function removeConversation(event: MouseEvent, id: string) {
     event.stopPropagation();
-    setConversations((current) => current.filter((item) => item.id !== id));
-    if (activeId === id) setActiveId(null);
+    if (busy) return;
+    try {
+      await removeConversationRequest(id);
+      setConversations((current) => current.filter((item) => item.id !== id));
+      if (activeId === id) {
+        setActiveId(null);
+        setMessages([]);
+      }
+    } catch (caught) {
+      setError(
+        caught instanceof Error
+          ? caught.message
+          : "Could not delete this conversation.",
+      );
+    }
   }
 
   async function submitMessage(event?: FormEvent) {
@@ -125,52 +168,37 @@ function App() {
     const content = draft.trim();
     if (!content || busy) return;
 
-    const currentId = activeId ?? crypto.randomUUID();
-    const userMessage = makeMessage("user", content);
-    const currentConversation = conversations.find(
-      ({ id }) => id === currentId,
-    );
-    const nextMessages = [
-      ...(currentConversation?.messages ?? []),
-      userMessage,
-    ];
-    const conversation: Conversation = {
-      id: currentId,
-      title: currentConversation?.title ?? content.slice(0, 48),
-      updatedAt: Date.now(),
-      messages: nextMessages,
-    };
-
-    setActiveId(currentId);
-    setConversations((current) => [
-      conversation,
-      ...current.filter(({ id }) => id !== currentId),
-    ]);
     setDraft("");
     setError(null);
     setBusy(true);
     if (textareaRef.current) textareaRef.current.style.height = "auto";
 
+    const pendingMessage = {
+      id: `pending-${crypto.randomUUID()}`,
+      role: "user" as const,
+      content,
+      created_at: new Date().toISOString(),
+    };
+
     try {
-      const history = (currentConversation?.messages ?? [])
-        .slice(-12)
-        .map(({ role, content: turnContent }) => ({
-          role,
-          content: turnContent,
-        }));
-      const answer = await sendChatMessage(content, history);
-      const assistantMessage = makeMessage("assistant", answer);
-      setConversations((current) =>
-        current.map((item) =>
-          item.id === currentId
-            ? {
-                ...item,
-                updatedAt: Date.now(),
-                messages: [...item.messages, assistantMessage],
-              }
-            : item,
-        ),
-      );
+      let conversationId = activeId;
+      if (!conversationId) {
+        const conversation = await createConversation();
+        conversationId = conversation.id;
+        setActiveId(conversation.id);
+        setConversations((current) => [conversation, ...current]);
+      }
+      setMessages((current) => [...current, pendingMessage]);
+      const response = await sendChatMessage(content, conversationId);
+      setConversations((current) => [
+        response.conversation,
+        ...current.filter(({ id }) => id !== response.conversation.id),
+      ]);
+      setMessages((current) => [
+        ...current.filter(({ id }) => id !== pendingMessage.id),
+        response.user_message,
+        response.assistant_message,
+      ]);
       setApiOnline(true);
     } catch (caught) {
       setError(
@@ -205,11 +233,10 @@ function App() {
       <>
         <div className="brand-lockup">
           <div className="brand-mark">
-            <Atom size={21} strokeWidth={1.8} />
+            <Atom size={23} strokeWidth={1.8} />
           </div>
           <div>
             <div className="brand-name">ScholarGraph</div>
-            <div className="brand-caption">RESEARCH STUDIO</div>
           </div>
           <button
             className="icon-button mobile-close"
@@ -220,14 +247,18 @@ function App() {
           </button>
         </div>
 
-        <button className="new-chat-button" onClick={startConversation}>
-          <Plus size={17} />
+        <button
+          className="new-chat-button"
+          onClick={startConversation}
+          disabled={busy}
+        >
+          <Plus size={20} />
           <span>New conversation</span>
           <span className="shortcut">Ctrl K</span>
         </button>
 
         <div className="sidebar-section-label">
-          <span>YOUR WORKSPACE</span>
+          <span>CONVERSATION HISTORY</span>
           <ChevronDown size={13} />
         </div>
         <div className="conversation-list">
@@ -243,11 +274,8 @@ function App() {
               >
                 <button
                   className="conversation-select"
-                  onClick={() => {
-                    setActiveId(conversation.id);
-                    setError(null);
-                    setMobileNavOpen(false);
-                  }}
+                  disabled={busy}
+                  onClick={() => void openConversation(conversation.id)}
                 >
                   <MessageSquareText size={16} />
                   <span className="conversation-title">
@@ -257,8 +285,9 @@ function App() {
                 <button
                   className="conversation-delete"
                   aria-label={`Delete ${conversation.title}`}
+                  disabled={busy}
                   onClick={(event) =>
-                    removeConversation(event, conversation.id)
+                    void removeConversation(event, conversation.id)
                   }
                 >
                   <Trash2 size={14} />
@@ -289,7 +318,7 @@ function App() {
           </div>
           <div className="local-note">
             <HardDrive size={15} />
-            <span>Chat history stays on this device</span>
+            <span>Chat history saved locally.</span>
           </div>
         </div>
       </>
@@ -330,7 +359,7 @@ function App() {
               <span className="model-orb">
                 <Sparkles size={13} />
               </span>{" "}
-              ScholarGraph AI
+              ScholarGraph Chatbot
             </span>
             <span className="topbar-divider" />
             <div className="avatar" title="Research workspace">
@@ -405,7 +434,15 @@ function App() {
                     <div className="message-label">
                       {message.role === "assistant" ? "SCHOLARGRAPH" : "YOU"}
                     </div>
-                    <div className="message-content">{message.content}</div>
+                    <div className="message-content">
+                      {message.role === "assistant" ? (
+                        <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                          {message.content}
+                        </ReactMarkdown>
+                      ) : (
+                        message.content
+                      )}
+                    </div>
                   </div>
                   {message.role === "user" && (
                     <div className="user-avatar">Y</div>

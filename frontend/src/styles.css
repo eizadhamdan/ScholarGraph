@@ -5,7 +5,7 @@
   font-synthesis: none;
   text-rendering: optimizeLegibility;
   --ink: #25332d;
-  --muted: #838c83;
+  --muted: #68756b;
   --line: #e3e5dc;
   --paper: #f6f6f1;
   --white: #fffefa;
@@ -20,10 +20,16 @@
   box-sizing: border-box;
 }
 
+html,
+body,
+#root {
+  height: 100%;
+  overflow: hidden;
+}
+
 body {
   margin: 0;
   min-width: 360px;
-  min-height: 100vh;
 }
 
 button,
@@ -41,7 +47,10 @@ textarea:focus-visible {
 
 .app-shell {
   display: flex;
-  min-height: 100vh;
+  height: 100vh;
+  height: 100dvh;
+  min-height: 0;
+  overflow: hidden;
   background: var(--paper);
 }
 .sidebar {
@@ -49,6 +58,8 @@ textarea:focus-visible {
   flex: 0 0 272px;
   display: flex;
   flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
   padding: 25px 17px 16px;
   background: #eff0e9;
   border-right: 1px solid #e4e6dd;
@@ -72,7 +83,7 @@ textarea:focus-visible {
 }
 .brand-name {
   font-family: var(--serif);
-  font-size: 21px;
+  font-size: 24px;
   font-weight: 600;
   line-height: 1;
   letter-spacing: 0;
@@ -117,7 +128,7 @@ textarea:focus-visible {
   background: var(--white);
   color: #34443a;
   text-align: left;
-  font-size: 13px;
+  font-size: 14px;
   font-weight: 600;
   cursor: pointer;
   transition:
@@ -136,8 +147,8 @@ textarea:focus-visible {
   align-items: center;
   gap: 2px;
   margin-left: auto;
-  color: #a0a69d;
-  font-size: 10px;
+  color: #737f74;
+  font-size: 11px;
   font-weight: 500;
 }
 .sidebar-section-label {
@@ -157,8 +168,8 @@ textarea:focus-visible {
 }
 .empty-history {
   padding: 0 9px;
-  color: #8c938a;
-  font-size: 12px;
+  color: #667368;
+  font-size: 13px;
   line-height: 1.6;
 }
 .conversation-item {
@@ -174,7 +185,7 @@ textarea:focus-visible {
 .conversation-item:hover,
 .conversation-item.active {
   background: #e4e8df;
-  color: #304438;
+  color: #26382d;
 }
 .conversation-select {
   display: flex;
@@ -197,7 +208,7 @@ textarea:focus-visible {
   overflow: hidden;
   flex: 1;
   color: inherit;
-  font-size: 12px;
+  font-size: 13px;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -251,12 +262,12 @@ textarea:focus-visible {
   gap: 3px;
 }
 .connection-copy strong {
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 600;
 }
 .connection-copy span {
-  color: #899087;
-  font-size: 10px;
+  color: #68756a;
+  font-size: 11px;
 }
 .status-dot {
   width: 7px;
@@ -278,8 +289,8 @@ textarea:focus-visible {
   gap: 9px;
   margin-top: 12px;
   padding: 5px 9px;
-  color: #858d82;
-  font-size: 10px;
+  color: #647267;
+  font-size: 11px;
 }
 
 .main-panel {
@@ -287,10 +298,13 @@ textarea:focus-visible {
   flex: 1;
   flex-direction: column;
   min-width: 0;
-  min-height: 100vh;
+  min-height: 0;
+  height: 100%;
+  overflow: hidden;
 }
 .topbar {
   display: flex;
+  flex: 0 0 68px;
   align-items: center;
   justify-content: space-between;
   height: 68px;
@@ -310,12 +324,12 @@ textarea:focus-visible {
   gap: 10px;
   max-width: 56vw;
   overflow: hidden;
-  color: #92978e;
-  font-size: 12px;
+  color: #707a71;
+  font-size: 13px;
 }
 .breadcrumb strong {
   overflow: hidden;
-  color: #48554b;
+  color: #344238;
   font-weight: 600;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -330,8 +344,8 @@ textarea:focus-visible {
   display: flex;
   align-items: center;
   gap: 7px;
-  color: #637166;
-  font-size: 11px;
+  color: #4e5f52;
+  font-size: 12px;
   font-weight: 600;
 }
 .model-orb {
@@ -363,7 +377,9 @@ textarea:focus-visible {
 
 .chat-scroll {
   flex: 1;
+  min-height: 0;
   overflow-y: auto;
+  overscroll-behavior-y: contain;
 }
 .chat-scroll-empty {
   display: flex;
@@ -406,8 +422,8 @@ textarea:focus-visible {
 .welcome-copy {
   max-width: 480px;
   margin: 19px 0 33px;
-  color: #727c73;
-  font-size: 13px;
+  color: #59665c;
+  font-size: 14px;
   line-height: 1.75;
 }
 .suggestion-heading {
@@ -416,8 +432,8 @@ textarea:focus-visible {
   justify-content: space-between;
   padding-bottom: 10px;
   border-bottom: 1px solid #dfe3da;
-  color: #8c948b;
-  font-size: 9px;
+  color: #687569;
+  font-size: 10px;
   font-weight: 700;
   letter-spacing: 1.15px;
 }
@@ -438,9 +454,9 @@ textarea:focus-visible {
   border: 0;
   border-bottom: 1px solid #e4e6de;
   background: transparent;
-  color: #48564c;
+  color: #344339;
   text-align: left;
-  font-size: 12px;
+  font-size: 13px;
   line-height: 1.45;
   cursor: pointer;
   transition:
@@ -473,15 +489,15 @@ textarea:focus-visible {
   align-items: center;
   gap: 7px;
   margin-top: 21px;
-  color: #879087;
-  font-size: 10px;
+  color: #647166;
+  font-size: 11px;
 }
 .capability-note svg {
   color: #4d8465;
 }
 
 .message-thread {
-  width: min(760px, calc(100% - 64px));
+  width: min(980px, calc(100% - 72px));
   margin: 0 auto;
   padding: 36px 0 48px;
 }
@@ -491,8 +507,8 @@ textarea:focus-visible {
   justify-content: center;
   gap: 12px;
   margin: 4px 0 34px;
-  color: #a2a69b;
-  font-size: 9px;
+  color: #748074;
+  font-size: 10px;
   font-weight: 700;
   letter-spacing: 1.1px;
 }
@@ -523,7 +539,7 @@ textarea:focus-visible {
   background: #e9f0e8;
 }
 .message-content-wrap {
-  max-width: min(650px, 85%);
+  max-width: min(820px, 88%);
 }
 .user .message-content-wrap {
   display: flex;
@@ -535,24 +551,109 @@ textarea:focus-visible {
   align-items: center;
   gap: 9px;
   margin: 2px 0 9px;
-  color: #92988e;
-  font-size: 9px;
+  color: #68756a;
+  font-size: 10px;
   font-weight: 700;
   letter-spacing: 1px;
 }
 .message-content {
-  color: #39483e;
-  font-size: 13px;
-  line-height: 1.8;
-  white-space: pre-wrap;
+  color: #2e3b32;
+  font-size: 15px;
+  line-height: 1.75;
+  white-space: normal;
   overflow-wrap: anywhere;
+}
+.message-content > :first-child {
+  margin-top: 0;
+}
+.message-content > :last-child {
+  margin-bottom: 0;
+}
+.message-content p {
+  margin: 0 0 0.85em;
+}
+.message-content h1,
+.message-content h2,
+.message-content h3,
+.message-content h4 {
+  margin: 1.1em 0 0.45em;
+  color: #283a2f;
+  font-family: var(--serif);
+  font-weight: 600;
+  line-height: 1.25;
+}
+.message-content h1 {
+  font-size: 24px;
+}
+.message-content h2 {
+  font-size: 21px;
+}
+.message-content h3,
+.message-content h4 {
+  font-size: 18px;
+}
+.message-content strong {
+  color: #26382d;
+  font-weight: 700;
+}
+.message-content ul,
+.message-content ol {
+  margin: 0.4em 0 1em;
+  padding-left: 1.6em;
+}
+.message-content li {
+  margin: 0.35em 0;
+  padding-left: 0.2em;
+}
+.message-content li > p {
+  margin: 0.2em 0;
+}
+.message-content a {
+  color: #28604d;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 2px;
+}
+.message-content blockquote {
+  margin: 0.8em 0;
+  padding: 0.2em 0 0.2em 1em;
+  border-left: 3px solid #a8bca9;
+  color: #56655a;
+}
+.message-content code {
+  padding: 0.12em 0.35em;
+  border-radius: 4px;
+  background: #e9ede6;
+  color: #32483a;
+  font-family: Consolas, "SFMono-Regular", monospace;
+  font-size: 0.9em;
+}
+.message-content pre {
+  overflow-x: auto;
+  margin: 0.8em 0;
+  padding: 13px 15px;
+  border: 1px solid #dce2d8;
+  border-radius: 7px;
+  background: #f0f2ec;
+  line-height: 1.55;
+}
+.message-content pre code {
+  padding: 0;
+  background: transparent;
+  color: inherit;
+  font-size: 12px;
+}
+.message-content hr {
+  height: 1px;
+  margin: 1em 0;
+  border: 0;
+  background: #dfe4db;
 }
 .user .message-content {
   padding: 12px 15px;
   border: 1px solid #dce7dc;
   border-radius: 11px 3px 11px 11px;
   background: #e9f0e8;
-  color: #304338;
+  color: #29392e;
 }
 .user-avatar {
   flex: 0 0 29px;
@@ -562,8 +663,8 @@ textarea:focus-visible {
   background: #b9684f;
 }
 .thinking-label {
-  color: #a2aa9f;
-  font-size: 8px;
+  color: #758176;
+  font-size: 9px;
   letter-spacing: 0.8px;
 }
 .typing-indicator {
@@ -596,7 +697,7 @@ textarea:focus-visible {
   border-radius: 7px;
   background: #fbf0ec;
   color: #8b4b3b;
-  font-size: 11px;
+  font-size: 12px;
   line-height: 1.5;
 }
 .error-banner button {
@@ -613,39 +714,43 @@ textarea:focus-visible {
 }
 
 .composer-area {
-  width: min(760px, calc(100% - 64px));
+  flex: 0 0 auto;
+  width: min(980px, calc(100% - 72px));
   margin: 0 auto;
   padding: 10px 0 20px;
 }
 .composer {
-  padding: 12px 13px 9px 17px;
-  border: 1px solid #dfe3da;
+  padding: 14px 15px 10px 18px;
+  border: 1px solid #aebbad;
   border-radius: 10px;
-  background: var(--white);
-  box-shadow: 0 4px 18px rgba(43, 57, 46, 0.035);
+  background: #fffefa;
+  box-shadow: 0 4px 18px rgba(43, 57, 46, 0.07);
   transition:
     border-color 0.2s,
     box-shadow 0.2s;
 }
 .composer:focus-within {
-  border-color: #9db3a0;
-  box-shadow: 0 4px 20px rgba(43, 78, 56, 0.075);
+  border-color: #557760;
+  box-shadow:
+    0 0 0 3px rgba(40, 96, 77, 0.12),
+    0 5px 20px rgba(43, 78, 56, 0.11);
 }
 .composer textarea {
   display: block;
   width: 100%;
-  min-height: 27px;
+  min-height: 32px;
   max-height: 160px;
   resize: none;
   border: 0;
   outline: 0;
   background: transparent;
-  color: #35443a;
-  font-size: 13px;
+  color: #29382e;
+  font-size: 15px;
   line-height: 1.7;
 }
 .composer textarea::placeholder {
-  color: #a0a69d;
+  color: #68766b;
+  opacity: 1;
 }
 .composer textarea:focus-visible {
   outline: 0;
@@ -660,15 +765,15 @@ textarea:focus-visible {
   display: flex;
   align-items: center;
   gap: 5px;
-  color: #9ba198;
-  font-size: 9px;
+  color: #647166;
+  font-size: 11px;
 }
 .keycap {
-  color: #818a80;
+  color: #3f5145;
 }
 .hint-separator {
   margin: 0 2px;
-  color: #ccd0c8;
+  color: #a3ada2;
 }
 .composer-actions {
   display: flex;
@@ -676,8 +781,8 @@ textarea:focus-visible {
   gap: 10px;
 }
 .character-count {
-  color: #a1a79e;
-  font-size: 9px;
+  color: #68766b;
+  font-size: 11px;
 }
 .send-button {
   display: grid;
@@ -704,9 +809,9 @@ textarea:focus-visible {
 }
 .disclaimer {
   margin-top: 9px;
-  color: #a0a49a;
+  color: #707a70;
   text-align: center;
-  font-size: 9px;
+  font-size: 10px;
 }
 .composer-error {
   margin: 0 0 10px;
@@ -763,6 +868,7 @@ textarea:focus-visible {
     background: rgba(25, 37, 29, 0.28);
   }
   .topbar {
+    flex-basis: 60px;
     height: 60px;
     padding: 0 17px;
   }
@@ -799,13 +905,13 @@ textarea:focus-visible {
   }
   .welcome-copy {
     margin: 16px 0 27px;
-    font-size: 12px;
+    font-size: 13px;
   }
   .suggestion-card {
     grid-template-columns: 28px 1fr 16px;
     gap: 7px;
     min-height: 62px;
-    font-size: 11px;
+    font-size: 12px;
   }
   .message-thread,
   .composer-area {
@@ -818,7 +924,7 @@ textarea:focus-visible {
     max-width: 88%;
   }
   .composer-hint {
-    font-size: 8px;
+    font-size: 10px;
   }
 }
 
@@ -837,10 +943,10 @@ textarea:focus-visible {
     font-size: 43px;
   }
   .composer-hint {
-    gap: 3px;
+    gap: 4px;
   }
   .disclaimer {
-    font-size: 8px;
+    font-size: 9px;
   }
 }
 

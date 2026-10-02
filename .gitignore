@@ -135,6 +135,7 @@ venv/
 ENV/
 frontend/node_modules/
 frontend/dist/
+backend/data/chat_history.sqlite3*
 env.bak/
 venv.bak/
 

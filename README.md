@@ -1,8 +1,8 @@
 # ScholarGraph
 
-> Agentic GraphRAG engine combining topological knowledge graph traversal with dense vector search for multi-hop academic reasoning.
+> A research assistant that combines knowledge-graph traversal and semantic paper search to answer questions about academic literature.
 
-ScholarGraph bridges the gap between structured relational data (author networks, paper citations, domain concepts) and unstructured text (paper abstracts and methodology passages). By using **Neo4j** for graph structures, **ChromaDB** for vector retrieval, **Gemini API** for reasoning, and **LangGraph** for dynamic orchestration, ScholarGraph answers complex academic research questions that standard RAG systems fail to address.
+ScholarGraph connects structured paper relationships (authors, categories, and methods) with unstructured abstract text. The Python backend uses **Neo4j** for graph queries, **ChromaDB** for semantic retrieval, and **Google Gemini** for query translation and answer synthesis. A separate **React** frontend communicates with the backend over HTTP.
 
 ---
 
@@ -12,9 +12,9 @@ ScholarGraph bridges the gap between structured relational data (author networks
 +----------------------------------------------------------------------------------+
 |                               PHASE 1: INGESTION                                  |
 |                                                                                   |
-|  [ arXiv API ] ---> Fetch Metadata & Abstracts                                    |
+|  [ OpenAlex API ] ---> Fetch Metadata & Abstracts                                 |
 |                           |                                                       |
-|                           +---> [ Gemini API ] --------> Extract Graph Triples   |
+|                           +---> [ Gemini API ] --------> Extract Graph Triples    |
 |                           |                                (Nodes & Edges)        |
 |                           |                                       |               |
 |                           v                                       v               |
@@ -31,8 +31,8 @@ ScholarGraph bridges the gap between structured relational data (author networks
 |                                [ User Input Query ]                               |
 |                                         |                                         |
 |                                         v                                         |
-|                             [ LangGraph Router Agent ]                            |
-|                               (Gemini Decision Loop)                              |
+|                              [ ScholarGraph Agent ]                               |
+|                    (Gemini query translation and synthesis)                       |
 |                                         |                                         |
 |                  +----------------------+----------------------+                  |
 |                  |                                             |                  |
@@ -40,49 +40,14 @@ ScholarGraph bridges the gap between structured relational data (author networks
 |       [ Cypher Query Tool ]                         [ Vector Retrieval Tool ]     |
 |                 |                                              |                  |
 |                 v                                              v                  |
-|      (Traverses Neo4j Graph)                       (Searches ChromaDB Chunks)     |
+|      (Traverses Neo4j Graph)                     (Searches ChromaDB Abstracts)    |
 |                 |                                              |                  |
 |                 +----------------------+-----------------------+                  |
 |                                         |                                         |
 |                                         v                                         |
 |                             [ Gemini Synthesis Agent ]                            |
-|                        (Grounded Answer + Citations)                              |
+|                           (Context-grounded answer)                               |
 +-----------------------------------------------------------------------------------+
-
-```
-
----
-
-## Repository Structure
-
-```text
-ScholarGraph/
-├── .gitattributes
-├── .gitignore
-├── pyproject.toml
-├── README.md
-├── requirements.txt
-└── src/
-    └── scholargraph/
-        ├── __init__.py
-        ├── config.py             # Configuration & environment variables
-        ├── arxiv_fetcher.py      # arXiv Python API fetching module
-        ├── graph_extractor.py    # LLM extraction logic (Gemini + Pydantic)
-        ├── embedding_generator.py# Local embedding generation (SentenceTransformers)
-        ├── vector_store.py       # ChromaDB interface & operations
-        ├── graph_store.py        # Neo4j interface & Cypher execution
-        ├── agent.py              # LangGraph orchestration engine
-        ├── api.py                # FastAPI HTTP interface for the frontend
-        ├── main.py               # Application entry point / CLI interface
-        └── tools/
-            ├── __init__.py
-            ├── cypher_tool.py    # Neo4j graph retrieval tool
-            └── vector_tool.py    # ChromaDB vector retrieval tool
-    ├── frontend/                     # Independent React + Vite client
-    │   └── src/
-    │       ├── App.tsx
-    │       ├── lib/api.ts            # Typed API client
-    │       └── styles.css
 
 ```
 
@@ -92,88 +57,52 @@ ScholarGraph/
 
 | Layer | Technology | Execution Environment |
 | --- | --- | --- |
-| **LLM Reasoning** | Google Gemini API (`gemini-2.5-flash` / `gemini-2.5-pro`) | Cloud API |
-| **Data Ingestion** | `arxiv` Python API & `pydantic` | Google Colab |
+| **LLM Reasoning** | Google Gemini API (`google-genai`) | Cloud API |
+| **Data Collection** | OpenAlex-based collection script and JSON paper artifacts | Colab-oriented pipeline / local files |
 | **Embeddings** | `BAAI/bge-small-en-v1.5` | Google Colab (T4 GPU) / Local |
 | **Vector Database** | ChromaDB (Persistent Disk Mode) | Local Machine |
 | **Graph Database** | Neo4j Community (Docker Container) | Local Machine (`localhost:7687`) |
-| **Agent Orchestration** | LangGraph & `google-genai` | Local Machine |
+| **Backend API** | FastAPI + Uvicorn | Local Python process |
+| **Frontend** | React, TypeScript, Vite | Browser / Node.js development server |
 
 ---
 
-1. **Start local Neo4j database**
+## Core Concepts
 
----
+### GraphRAG
 
-## Data Pipeline & System Execution
+Retrieval-augmented generation (RAG) gives a language model relevant source material at answer time instead of asking it to rely only on its training data. GraphRAG adds a knowledge graph to that process. ScholarGraph runs a graph lookup and a semantic text lookup, then gives both result sets to Gemini for synthesis.
 
-### Step 1: Extract & Embed Data (Google Colab / Compute Host)
+### Knowledge graph
 
-Run ingestion scripts on Google Colab (with a free T4 GPU enabled) to pull paper abstracts, extract entities via Gemini, and generate text vector embeddings:
+A knowledge graph represents entities as **nodes** and their connections as **relationships**. ScholarGraph models `Paper`, `Author`, `Category`, and `Concept` nodes. Relationships include `AUTHORED`, `IN_CATEGORY`, and `USES_METHOD`. Neo4j stores this structure and Cypher expresses traversals such as “which authors used this method?”
 
-1. Fetch abstracts using the arXiv Python API:
+### Embeddings and vector search
 
-```bash
-python -m scholargraph.arxiv_fetcher --categories cs.AI cs.CL --max-results 2000
+An embedding is a numeric representation of text that places semantically similar passages near one another in vector space. The project uses SentenceTransformers with `BAAI/bge-small-en-v1.5` to embed abstracts. ChromaDB stores those vectors with the abstract and metadata, then finds text relevant to a natural-language question by similarity rather than exact keyword matching.
 
-```
+### Hybrid retrieval and answer synthesis
 
-2. Extract graph triples (`Paper`, `Author`, `Category`, `Concept`) using Gemini:
+The backend asks Gemini to translate a question into a Cypher query, executes that query in Neo4j, searches ChromaDB using the original question, and asks Gemini to synthesize a concise answer from both result sets. Graph results provide explicit relationships; vector results provide relevant abstract text. The current implementation performs these lookups sequentially and independently, not as a graph-conditioned vector search.
 
-```bash
-python -m scholargraph.graph_extractor --input data/raw_arxiv.json --output data/graph_triples.json
+### API boundary and frontend
 
-```
+The React application does not connect directly to Gemini, Neo4j, or ChromaDB. It uses FastAPI to create, list, load, and delete conversations and sends messages to `POST /api/chat` with a conversation ID. The backend stores messages in a local SQLite database and supplies recent turns to the agent. The Vite development server proxies `/api` to FastAPI; API credentials remain in the backend environment.
 
-3. Generate embeddings on GPU:
+## Data Pipeline
 
-```bash
-python -m scholargraph.embedding_generator --input data/raw_arxiv.json --output data/arxiv_vectors.parquet
+The pipeline starts with paper metadata and abstracts, enriches each paper with author/category/method relationships, and produces dense embeddings of abstract text. Graph triples are imported into Neo4j; precomputed embeddings are imported into the persistent ChromaDB collection named `arxiv_papers`. The existing `data/README.md` documents the artifact fields and formats. The paper-collection script is Colab-oriented, while local extraction and database import utilities live in `backend/src/scholargraph/`.
 
-```
+The repository may not contain every generated artifact: embedding Parquet files and the persistent Chroma index are local/generated data and should be provisioned for the environment. Neo4j must also be running and hydrated before research queries can return useful results.
 
-4. Download `graph_triples.json` and `arxiv_vectors.parquet` into your local `data/` folder.
+## Run the Application
 
-### Step 2: Hydrate Local Databases
+The backend and frontend have separate setup and run guides:
 
-Populate your local ChromaDB and Neo4j database instances from the generated data artifacts:
+- [Backend setup and API guide](backend/README.md)
+- [Frontend setup and development guide](frontend/README.md)
 
-```bash
-# Load vector embeddings into ChromaDB
-python -m scholargraph.vector_store --import data/arxiv_vectors.parquet
-
-# Ingest graph triples into Neo4j
-python -m scholargraph.graph_store --import data/graph_triples.json
-
-```
-
-### Step 3: Run the ScholarGraph Agent
-
-Launch the CLI interface to query your hybrid GraphRAG agent:
-
-```bash
-python -m scholargraph.main
-
-```
-
-### Step 4: Run the web application
-
-The Python package remains the backend, and the React client lives in `frontend/`. Start the API from the repository root in one terminal:
-
-```powershell
-python -m pip install -r requirements.txt
-uvicorn scholargraph.api:app --app-dir src --reload
-```
-
-Then start the frontend in a second terminal:
-
-```powershell
-cd frontend
-npm install
-npm run dev
-```
-
-Open <http://localhost:5173>. Vite proxies `/api` requests to the backend at `http://127.0.0.1:8000`. The API uses the root `.env` for Gemini and Neo4j configuration; Neo4j must be running and the graph and vector stores must be populated as described above. Chat history is stored in the browser. For a separately hosted API, set `VITE_API_URL` in the frontend environment and `FRONTEND_ORIGIN` for backend CORS.
+For a local chat session, start the FastAPI server from `backend/`, then start Vite from `frontend/`. The frontend is served at <http://localhost:5173> and the API defaults to <http://127.0.0.1:8000>.
 
 ---
 
@@ -185,7 +114,7 @@ Open <http://localhost:5173>. Vite proxies `/api` requests to the backend at `ht
 
 **Agent Execution Strategy:**
 
-1. **Router Agent:** Evaluates query intent and triggers a combined retrieval path.
+1. **Query translation:** Gemini creates a Cypher query from the user's question and the known graph schema.
 2. **Cypher Tool Execution:** Queries Neo4j for co-authorship relationships and paper IDs within the "Graph Neural Networks" category.
 
 ```cypher
@@ -195,7 +124,7 @@ RETURN a1.name, a2.name, p.id, p.title
 
 ```
 
-1. **Vector Tool Execution:** Uses the paper IDs returned by Neo4j to pull exact contextual abstracts and methodologies from ChromaDB.
-2. **Synthesis Agent:** Combines structural network paths with semantic text snippets to format a grounded answer complete with arXiv paper citations.
+1. **Vector retrieval:** ChromaDB finds abstracts semantically related to the original question.
+2. **Answer synthesis:** Gemini combines graph records and retrieved abstracts into a concise response. Answers should be checked against the cited source papers.
 
 ---

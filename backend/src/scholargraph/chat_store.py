@@ -1,3 +1,4 @@
+import json
 import os
 import sqlite3
 import uuid
@@ -56,6 +57,7 @@ def initialize_database() -> None:
                 role TEXT NOT NULL CHECK (role IN ('user', 'assistant')),
                 content TEXT NOT NULL,
                 created_at TEXT NOT NULL,
+                retrieval_json TEXT,
                 FOREIGN KEY (conversation_id)
                     REFERENCES conversations(id) ON DELETE CASCADE
             );
@@ -64,6 +66,11 @@ def initialize_database() -> None:
                 ON messages(conversation_id, id);
             """
         )
+        message_columns = {
+            row["name"] for row in connection.execute("PRAGMA table_info(messages)")
+        }
+        if "retrieval_json" not in message_columns:
+            connection.execute("ALTER TABLE messages ADD COLUMN retrieval_json TEXT")
 
 
 def create_conversation() -> dict:
@@ -112,7 +119,7 @@ def get_conversation(conversation_id: str) -> dict | None:
 
         messages = connection.execute(
             """
-            SELECT id, role, content, created_at
+            SELECT id, role, content, created_at, retrieval_json
             FROM messages
             WHERE conversation_id = ?
             ORDER BY id
@@ -120,7 +127,13 @@ def get_conversation(conversation_id: str) -> dict | None:
             (conversation_id,),
         ).fetchall()
 
-    return {**dict(conversation), "messages": [dict(row) for row in messages]}
+    stored_messages = []
+    for row in messages:
+        message = dict(row)
+        retrieval_json = message.pop("retrieval_json")
+        message["retrieval"] = json.loads(retrieval_json) if retrieval_json else None
+        stored_messages.append(message)
+    return {**dict(conversation), "messages": stored_messages}
 
 
 def add_user_message(
@@ -182,7 +195,9 @@ def add_user_message(
     return summary, message, history
 
 
-def add_assistant_message(conversation_id: str, content: str) -> dict:
+def add_assistant_message(
+    conversation_id: str, content: str, retrieval: dict | None = None
+) -> dict:
     now = _now()
     with _connect() as connection:
         if (
@@ -194,10 +209,16 @@ def add_assistant_message(conversation_id: str, content: str) -> dict:
             raise ConversationNotFoundError(conversation_id)
         cursor = connection.execute(
             """
-            INSERT INTO messages (conversation_id, role, content, created_at)
-            VALUES (?, 'assistant', ?, ?)
+            INSERT INTO messages
+                (conversation_id, role, content, created_at, retrieval_json)
+            VALUES (?, 'assistant', ?, ?, ?)
             """,
-            (conversation_id, content, now),
+            (
+                conversation_id,
+                content,
+                now,
+                json.dumps(retrieval) if retrieval is not None else None,
+            ),
         )
         connection.execute(
             "UPDATE conversations SET updated_at = ? WHERE id = ?",
@@ -208,6 +229,7 @@ def add_assistant_message(conversation_id: str, content: str) -> dict:
             "role": "assistant",
             "content": content,
             "created_at": now,
+            "retrieval": retrieval,
         }
 
 

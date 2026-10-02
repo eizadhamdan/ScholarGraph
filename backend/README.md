@@ -8,14 +8,14 @@ For the overall architecture and the GraphRAG concepts used here, see the [repos
 
 - `src/scholargraph/api.py`: FastAPI application. It exposes conversation CRUD, chat, and health endpoints.
 - `src/scholargraph/chat_store.py`: SQLite schema and persistence operations for conversations and ordered messages.
-- `src/scholargraph/agent.py`: Generates Cypher with Gemini, queries Neo4j, retrieves semantically related abstracts from ChromaDB, then asks Gemini to synthesize an answer.
+- `src/scholargraph/agent.py`: Runs graph retrieval before vector retrieval, requires structured claims cited with retrieved paper IDs, and returns both an answer and retrieval trace.
 - `src/scholargraph/graph_store.py`: Creates the Neo4j driver, imports graph triples, and executes Cypher.
 - `src/scholargraph/vector_store.py`: Imports precomputed embeddings to ChromaDB and performs vector retrieval. The embedding model is cached for reuse within the process.
 - `src/scholargraph/graph_extractor.py`: Builds author, category, and method relationships from paper JSON; Gemini can enrich the concepts.
 - `src/scholargraph/embedding_generator.py`: Generates normalized abstract embeddings using SentenceTransformers.
 - `src/scholargraph/arxiv_fetcher.py`: Colab-oriented collection/preprocessing script. It currently imports Google Colab utilities and is not a local command-line fetcher.
 - `src/scholargraph/main.py`: Optional interactive CLI using the same agent as the HTTP API.
-- `tests/`: API contract tests that mock the agent and do not need live Gemini or database services.
+- `tests/`: API, retrieval-order, citation-validation, and outage tests that do not need live Gemini or database services.
 
 ## Requirements
 
@@ -62,14 +62,18 @@ python -m uvicorn scholargraph.api:app --reload
 
 The API listens at `http://127.0.0.1:8000` by default. Useful routes:
 
-- `GET /api/health` returns `{"status":"ok"}` when the process is available. It does not check Gemini, Neo4j, or ChromaDB connectivity.
+- `GET /api/health` reports API process state and probes Neo4j. It returns `{"status":"ok","knowledge_graph_available":true}` when Neo4j is reachable, or `{"status":"degraded","knowledge_graph_available":false}` when it is not. It does not check Gemini or ChromaDB connectivity.
 - `GET /api/conversations` lists saved conversations, newest first.
 - `POST /api/conversations` creates an empty conversation.
 - `GET /api/conversations/{id}` loads a conversation and its ordered messages.
 - `DELETE /api/conversations/{id}` deletes the conversation and its messages.
-- `POST /api/chat` accepts JSON such as `{"message":"Find papers about graph neural networks","conversation_id":"..."}` and returns the answer plus the stored user/assistant messages.
+- `POST /api/chat` accepts JSON such as `{"message":"Find papers about graph neural networks","conversation_id":"..."}` and returns the answer, retrieval trace, and stored user/assistant messages.
 
 Chat input is limited to 4,000 characters. The backend loads up to the latest 12 stored turns as synthesis context; the browser cannot supply or alter that history through the chat request.
+
+Before query planning, the agent probes Neo4j; if it is unavailable, the request is rejected before calling Gemini. If Neo4j becomes unreachable during traversal, `POST /api/chat` returns HTTP `503` and stops. If Gemini's generated Cypher is rejected or returns zero rows, the agent tries a read-only keyword fallback. If that fallback also fails, the API returns HTTP `422` without an answer. The user message is kept in conversation history, but no assistant answer is written for failed turns.
+
+For a successful request, retrieval order is Cypher generation, Neo4j traversal, ChromaDB search (five papers), then answer synthesis. If Gemini's graph query returns zero rows or is rejected, the agent retries Neo4j with parameterized keyword matching over paper titles, methods, and categories. Every generated finding must cite one or more source IDs returned by one of the databases; invented IDs, malformed structured output, and empty evidence are rejected. The saved assistant message includes each Cypher attempt, its result count, error/fallback terms, up to 20 graph rows, plus vector-source titles, IDs, dates, and excerpts. The frontend exposes this trace in the “Retrieval evidence” panel, and the CLI prints graph/vector match counts. Gemini service outages return a retryable HTTP `503` with counts for retrieval completed so far.
 
 The CLI can be run from the same `backend/` working directory:
 
@@ -107,8 +111,8 @@ From `backend/`, with the project environment active:
 python -m pytest tests -q
 ```
 
-These tests validate request handling and response shape without calling Gemini or connecting to Neo4j/ChromaDB.
+These tests validate API persistence, graph-before-vector-before-synthesis order, citation validation, and unavailable-graph behavior without calling Gemini or connecting to Neo4j/ChromaDB.
 
 ## Deployment Note
 
-The API currently executes Cypher generated by Gemini directly against Neo4j. Use a least-privilege Neo4j account and add query validation/read-only restrictions before exposing this service to untrusted users or a public network.
+Generated Cypher is executed in a Neo4j read transaction, and its prompt is restricted to read queries. Still use a least-privilege Neo4j account before exposing this service to untrusted users or a public network. Citation validation confirms IDs came from retrieved data, not that each passage semantically entails its associated claim; verify important findings against the displayed excerpts and original papers.

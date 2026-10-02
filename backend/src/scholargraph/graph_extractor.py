@@ -60,7 +60,7 @@ def extract_graph_triples(
             prompt = f"Title: {title}\nAbstract: {summary}\nExtract 3-5 core AI techniques/methods/architectures."
             try:
                 response = client.models.generate_content(
-                    model="gemini-3.5-flash-lite",
+                    model="gemini-3.6-flash",
                     contents=prompt,
                     config={
                         "response_mime_type": "application/json",

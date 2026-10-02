@@ -5,8 +5,33 @@ from neo4j import GraphDatabase
 from .config import NEO4J_PASSWORD, NEO4J_URI, NEO4J_USERNAME
 
 
+class GraphUnavailableError(RuntimeError):
+    pass
+
+
+class GraphQueryError(RuntimeError):
+    pass
+
+
 def get_neo4j_driver():
-    return GraphDatabase.driver(NEO4J_URI, auth=(NEO4J_USERNAME, NEO4J_PASSWORD))
+    return GraphDatabase.driver(
+        NEO4J_URI,
+        auth=(NEO4J_USERNAME, NEO4J_PASSWORD),
+        connection_timeout=5.0,
+    )
+
+
+def check_graph_connection() -> bool:
+    driver = None
+    try:
+        driver = get_neo4j_driver()
+        driver.verify_connectivity()
+        return True
+    except Exception:
+        return False
+    finally:
+        if driver is not None:
+            driver.close()
 
 
 def import_triples_to_neo4j(json_path: str):
@@ -68,19 +93,29 @@ def import_triples_to_neo4j(json_path: str):
     print("Neo4j database hydration complete!")
 
 
-def run_cypher_query(cypher: str) -> list[dict]:
+def run_cypher_query(cypher: str, parameters: dict | None = None) -> list[dict]:
     """Executes a Cypher query against Neo4j and returns dict results."""
-    driver = get_neo4j_driver()
-    results = []
+    driver = None
     try:
+        driver = get_neo4j_driver()
         with driver.session() as session:
-            res = session.run(cypher)
-            results = [record.data() for record in res]
-    except Exception as e:
-        results = [{"error": str(e)}]
+            return session.execute_read(
+                lambda transaction: [
+                    record.data()
+                    for record in transaction.run(cypher, parameters or {})
+                ]
+            )
+    except Exception as error:
+        if getattr(error, "code", "").startswith("Neo.ClientError.Statement"):
+            raise GraphQueryError(
+                "Neo4j rejected the generated Cypher query."
+            ) from error
+        raise GraphUnavailableError(
+            "Neo4j is unavailable or the graph query failed."
+        ) from error
     finally:
-        driver.close()
-    return results
+        if driver is not None:
+            driver.close()
 
 
 if __name__ == "__main__":

@@ -19,9 +19,14 @@ def main():
                 print("Exiting ScholarGraph. Goodbye!")
                 sys.exit(0)
 
-            response = agent.run(query)
+            response = agent.run_with_evidence(query)
             print("\n---------------- RESPONSE ----------------")
-            print(response)
+            print(response.answer)
+            print(
+                "\n[Retrieval Evidence] "
+                f"Neo4j: {response.retrieval['graph_result_count']} rows; "
+                f"ChromaDB: {response.retrieval['vector_hit_count']} papers"
+            )
             print("------------------------------------------")
         except KeyboardInterrupt:
             print("\nExiting ScholarGraph. Goodbye!")

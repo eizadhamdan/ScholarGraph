@@ -83,11 +83,13 @@ An embedding is a numeric representation of text that places semantically simila
 
 ### Hybrid retrieval and answer synthesis
 
-The backend asks Gemini to translate a question into a Cypher query, executes that query in Neo4j, searches ChromaDB using the original question, and asks Gemini to synthesize a concise answer from both result sets. Graph results provide explicit relationships; vector results provide relevant abstract text. The current implementation performs these lookups sequentially and independently, not as a graph-conditioned vector search.
+The backend asks Gemini to translate a question into Cypher, executes a read-only Neo4j graph traversal, retries with parameterized keyword matching if that query is rejected or returns no rows, searches ChromaDB for five relevant abstracts, and only then asks Gemini to synthesize findings. Each finding must cite a paper ID present in the retrieved records; responses with no citable evidence or invented citation IDs are rejected. The saved answer includes a retrieval trace with every Cypher attempt, returned graph rows, and vector-paper excerpts. The lookups are sequential and independent, not graph-conditioned vector search.
+
+This makes retrieval inspectable and citation IDs verifiable, but it cannot mathematically prove that a cited passage entails every generated claim. Review the displayed paper excerpts and original papers for important conclusions.
 
 ### API boundary and frontend
 
-The React application does not connect directly to Gemini, Neo4j, or ChromaDB. It uses FastAPI to create, list, load, and delete conversations and sends messages to `POST /api/chat` with a conversation ID. The backend stores messages in a local SQLite database and supplies recent turns to the agent. The Vite development server proxies `/api` to FastAPI; API credentials remain in the backend environment.
+The React application does not connect directly to Gemini, Neo4j, or ChromaDB. It uses FastAPI to create, list, load, and delete conversations and sends messages to `POST /api/chat` with a conversation ID. The backend stores messages and their retrieval traces in local SQLite and supplies recent turns to the agent. Each assistant message has an expandable evidence panel showing graph results and retrieved paper excerpts. The Vite development server proxies `/api` to FastAPI; API credentials remain in the backend environment.
 
 ## Data Pipeline
 

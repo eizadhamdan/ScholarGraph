@@ -142,7 +142,7 @@ for i, paper in enumerate(tqdm(papers)):
         prompt = f"Title: {title}\nAbstract: {summary}\nExtract core techniques/models."
         try:
             response = client.models.generate_content(
-                model="gemini-3.5-flash-lite",
+                model="gemini-3.6-flash",
                 contents=prompt,
                 config={
                     "response_mime_type": "application/json",

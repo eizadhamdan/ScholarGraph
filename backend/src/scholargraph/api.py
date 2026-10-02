@@ -2,15 +2,23 @@ import logging
 import os
 from contextlib import asynccontextmanager
 from functools import lru_cache
-from typing import Literal
+from typing import Any, Literal
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field, field_validator
 from starlette.concurrency import run_in_threadpool
 
-from .agent import ScholarGraphAgent
+from .agent import (
+    AgentResult,
+    GraphQueryError,
+    GroundingValidationError,
+    InsufficientEvidenceError,
+    ModelUnavailableError,
+    ScholarGraphAgent,
+)
 from . import chat_store
+from .graph_store import GraphUnavailableError, check_graph_connection
 
 logger = logging.getLogger(__name__)
 
@@ -27,9 +35,34 @@ class ConversationSummary(BaseModel):
     updated_at: str
 
 
+class VectorSource(BaseModel):
+    paper_id: str
+    title: str | None = None
+    published: str | None = None
+    excerpt: str
+
+
+class GraphQueryAttempt(BaseModel):
+    kind: str
+    cypher: str
+    result_count: int
+    parameters: dict[str, Any] | None = None
+    error: str | None = None
+
+
+class RetrievalTrace(BaseModel):
+    graph_queries: list[GraphQueryAttempt]
+    graph_result_count: int
+    graph_records: list[dict[str, Any]]
+    graph_results_truncated: bool
+    vector_hit_count: int
+    vector_sources: list[VectorSource]
+
+
 class StoredMessage(ChatTurn):
     id: int
     created_at: str
+    retrieval: RetrievalTrace | None = None
 
 
 class ConversationDetail(ConversationSummary):
@@ -52,6 +85,7 @@ class ChatRequest(BaseModel):
 class ChatResponse(BaseModel):
     conversation: ConversationSummary
     answer: str
+    retrieval: RetrievalTrace
     user_message: StoredMessage
     assistant_message: StoredMessage
 
@@ -80,8 +114,12 @@ app.add_middleware(
 
 
 @app.get("/api/health")
-def health() -> dict[str, str]:
-    return {"status": "ok"}
+def health() -> dict[str, str | bool]:
+    graph_available = check_graph_connection()
+    return {
+        "status": "ok" if graph_available else "degraded",
+        "knowledge_graph_available": graph_available,
+    }
 
 
 @app.get("/api/conversations", response_model=list[ConversationSummary])
@@ -118,13 +156,14 @@ def _run_chat(request: ChatRequest) -> ChatResponse:
         raise chat_store.ConversationNotFoundError(request.conversation_id)
 
     conversation, user_message, history = stored
-    answer = get_agent().run(request.message, history)
+    result: AgentResult = get_agent().run_with_evidence(request.message, history)
     assistant_message = chat_store.add_assistant_message(
-        request.conversation_id, answer
+        request.conversation_id, result.answer, result.retrieval
     )
     return ChatResponse(
         conversation=conversation,
-        answer=answer,
+        answer=result.answer,
+        retrieval=result.retrieval,
         user_message=user_message,
         assistant_message=assistant_message,
     )
@@ -137,6 +176,60 @@ async def chat(request: ChatRequest) -> ChatResponse:
     except chat_store.ConversationNotFoundError as error:
         raise HTTPException(
             status_code=404, detail="Conversation not found."
+        ) from error
+    except GraphUnavailableError as error:
+        logger.exception("Knowledge graph query failed; refusing to generate answer")
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "The knowledge graph is unavailable or could not be queried. "
+                "No answer was generated. Check that Neo4j is running and reachable."
+            ),
+        ) from error
+    except GraphQueryError as error:
+        logger.warning("Generated Cypher was rejected: %s", error.__cause__ or error)
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "Neo4j rejected the generated graph query and the fallback search "
+                "could not complete. No answer was generated."
+            ),
+        ) from error
+    except ModelUnavailableError as error:
+        logger.warning("Gemini is unavailable: %s", error.__cause__ or error)
+        detail = (
+            "Gemini is temporarily unavailable. No answer was generated; "
+            "please retry when the model service is available."
+        )
+        if error.retrieval is not None:
+            graph_counts = ", ".join(
+                f"{attempt['kind']}: {attempt['result_count']} rows"
+                for attempt in error.retrieval["graph_queries"]
+            )
+            detail += (
+                f" Retrieval completed ({graph_counts}; "
+                f"ChromaDB: {error.retrieval['vector_hit_count']} papers)."
+            )
+        raise HTTPException(
+            status_code=503,
+            detail=detail,
+        ) from error
+    except InsufficientEvidenceError as error:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "No citable evidence was retrieved, so no answer was generated. "
+                "Try a more specific question or check the indexed data."
+            ),
+        ) from error
+    except GroundingValidationError as error:
+        logger.exception("Grounded response validation failed")
+        raise HTTPException(
+            status_code=502,
+            detail=(
+                "The model did not produce a response grounded in retrieved sources. "
+                "No answer was saved. Please try again."
+            ),
         ) from error
     except Exception as error:
         logger.exception("ScholarGraph query failed")

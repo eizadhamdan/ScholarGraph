@@ -108,6 +108,24 @@ For a local chat session, start the FastAPI server from `backend/`, then start V
 
 ---
 
+## Application Screenshots
+
+### Start a conversation
+
+The landing page offers example queries, a query box, and access to previous conversations.
+
+![ScholarGraph landing page](pictures/picture_1.png)
+
+### Example: Graph neural networks
+
+![ScholarGraph response about graph neural networks](pictures/picture_2.png)
+
+### Example: Retrieval-augmented generation
+
+![ScholarGraph response about retrieval-augmented generation](pictures/picture_3.png)
+
+---
+
 ## Example Interaction
 
 **User Query:**

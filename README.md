@@ -23,7 +23,7 @@ ScholarGraph connects structured paper relationships (authors, categories, and m
 |                           v                                                      |
 |                  [ ChromaDB Local ]                                              |
 |                (Vector DB Ingestion)                                             |
-+-----------------------------------------------------------------------------------+
++----------------------------------------------------------------------------------+
 
 +-----------------------------------------------------------------------------------+
 |                        PHASE 2: LANGGRAPH ORCHESTRATION ENGINE                    |

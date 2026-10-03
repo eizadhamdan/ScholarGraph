@@ -388,6 +388,14 @@ def test_fallback_graph_query_checks_methods_and_categories_separately(
     assert "methods + categories" not in fallback_query
 
 
+def test_fallback_terms_use_only_normalized_query_keywords() -> None:
+    assert agent_module._fallback_terms("What is retrieval augmented generation?") == [
+        "retrieval",
+        "augmented",
+        "generation",
+    ]
+
+
 def test_agent_rejects_citations_not_in_retrieved_sources(monkeypatch) -> None:
     class Models:
         def generate_content(self, **_kwargs):

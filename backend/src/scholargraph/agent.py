@@ -144,8 +144,6 @@ def _fallback_terms(user_query: str) -> list[str]:
         for token in normalized.split()
         if len(token) >= 3 and token not in STOP_WORDS
     ]
-    if "retrieval augmented generation" in normalized:
-        terms.extend(["retrieval-augmented generation", "rag"])
     return list(dict.fromkeys(terms))[:10]
 
 

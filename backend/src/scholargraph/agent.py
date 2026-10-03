@@ -87,7 +87,8 @@ WITH p,
 WITH p, methods, categories,
      [term IN $terms WHERE
         toLower(coalesce(p.title, '')) CONTAINS term OR
-        any(name IN methods + categories WHERE toLower(name) CONTAINS term)
+        any(name IN methods WHERE toLower(name) CONTAINS term) OR
+        any(name IN categories WHERE toLower(name) CONTAINS term)
      ] AS matched_terms
 WHERE size(matched_terms) > 0
 RETURN p.id AS paper_id, p.title AS title, methods, categories, matched_terms

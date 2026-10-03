@@ -365,6 +365,29 @@ def test_agent_runs_graph_then_vector_then_grounded_synthesis(monkeypatch) -> No
     assert result.retrieval["vector_hit_count"] == 1
 
 
+def test_fallback_graph_query_checks_methods_and_categories_separately(
+    monkeypatch,
+) -> None:
+    queries = []
+
+    def graph_search(cypher: str, parameters: dict | None = None):
+        queries.append((cypher, parameters))
+        return []
+
+    monkeypatch.setattr(agent_module, "run_cypher_query", graph_search)
+    agent = ScholarGraphAgent.__new__(ScholarGraphAgent)
+
+    agent._node_graph_retrieval(
+        {"cypher_query": "MATCH (p:Paper) RETURN p.id", "user_query": "graph methods"}
+    )
+
+    fallback_query, parameters = queries[1]
+    assert parameters == {"terms": ["graph", "methods"]}
+    assert "any(name IN methods WHERE toLower(name) CONTAINS term)" in fallback_query
+    assert "any(name IN categories WHERE toLower(name) CONTAINS term)" in fallback_query
+    assert "methods + categories" not in fallback_query
+
+
 def test_agent_rejects_citations_not_in_retrieved_sources(monkeypatch) -> None:
     class Models:
         def generate_content(self, **_kwargs):

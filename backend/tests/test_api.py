@@ -149,14 +149,50 @@ def test_chat_endpoint_persists_messages_and_uses_stored_history(
 def test_conversation_list_and_delete(client: TestClient) -> None:
     created = client.post("/api/conversations")
     conversation_id = created.json()["id"]
+    chat_store.add_user_message(conversation_id, "A question from a previous session")
+    chat_store.add_assistant_message(conversation_id, "A saved answer")
 
     listed = client.get("/api/conversations")
     assert [item["id"] for item in listed.json()] == [conversation_id]
+    assert listed.headers["cache-control"] == "no-store"
+    assert (
+        len(client.get(f"/api/conversations/{conversation_id}").json()["messages"])
+        == 2
+    )
 
     deleted = client.delete(f"/api/conversations/{conversation_id}")
     assert deleted.status_code == 204
     assert client.get(f"/api/conversations/{conversation_id}").status_code == 404
     assert client.get("/api/conversations").json() == []
+
+
+def test_chat_response_validation_error_is_not_reported_as_catalog_error(
+    client: TestClient, monkeypatch
+) -> None:
+    class InvalidTraceAgent:
+        def run_with_evidence(
+            self,
+            message: str,
+            history: list[dict[str, str]],
+            model_name: str,
+        ) -> AgentResult:
+            return AgentResult(
+                answer="An answer",
+                retrieval={"fused_candidate_count": 1},
+            )
+
+    monkeypatch.setattr(api, "get_agent", lambda: InvalidTraceAgent())
+    conversation_id = client.post("/api/conversations").json()["id"]
+
+    response = client.post(
+        "/api/chat",
+        json={"message": "Research question", "conversation_id": conversation_id},
+    )
+
+    assert response.status_code == 500
+    assert response.json()["detail"] == (
+        "The research query could not be completed. Check the backend logs."
+    )
 
 
 def test_chat_rejects_missing_conversation(client: TestClient, monkeypatch) -> None:
@@ -430,10 +466,20 @@ def test_agent_runs_graph_then_vector_then_grounded_synthesis(monkeypatch) -> No
 
     agent = ScholarGraphAgent.__new__(ScholarGraphAgent)
     agent.client = SimpleNamespace(models=Models())
-    agent._generate_cypher = lambda _query: "MATCH (p:Paper) RETURN p.id AS paper_id"
+    agent.reranker = SimpleNamespace(
+        predict=lambda pairs: [0.9 for _ in pairs]
+    )
+    agent._node_query_understanding = lambda state: {
+        "cypher_query": "MATCH (p:Paper) RETURN p.id AS paper_id",
+        "semantic_query": state["user_query"],
+    }
+    agent.app = agent._build_graph()
     monkeypatch.setattr(agent_module, "check_graph_connection", lambda: True)
 
     def graph_search(_cypher: str, parameters: dict | None = None):
+        if parameters is not None and "paper_ids" in parameters:
+            events.append("graph_expansion")
+            return []
         events.append("graph")
         if parameters is not None:
             events[-1] = "graph_fallback"
@@ -443,7 +489,7 @@ def test_agent_runs_graph_then_vector_then_grounded_synthesis(monkeypatch) -> No
 
     def vector_search(_query: str, n_results: int):
         events.append("vector")
-        assert n_results == 5
+        assert n_results == 15
         return [
             {
                 "paper_id": "W-vector",
@@ -455,9 +501,15 @@ def test_agent_runs_graph_then_vector_then_grounded_synthesis(monkeypatch) -> No
     monkeypatch.setattr(agent_module, "run_cypher_query", graph_search)
     monkeypatch.setattr(agent_module, "query_vector_store", vector_search)
 
-    result = agent.run_with_evidence("What is RAG?")
+    result = agent.run_with_evidence("What is retrieval generation?")
 
-    assert events == ["graph", "graph_fallback", "vector", "synthesis"]
+    assert events == [
+        "graph",
+        "graph_fallback",
+        "vector",
+        "graph_expansion",
+        "synthesis",
+    ]
     assert result.answer == "- RAG combines retrieval with generation. [W-vector]"
     assert result.retrieval["graph_result_count"] == 1
     assert [attempt["kind"] for attempt in result.retrieval["graph_queries"]] == [
@@ -465,6 +517,14 @@ def test_agent_runs_graph_then_vector_then_grounded_synthesis(monkeypatch) -> No
         "keyword fallback",
     ]
     assert result.retrieval["vector_hit_count"] == 1
+    assert result.retrieval["vector_sources"] == [
+        {
+            "paper_id": "W-vector",
+            "title": "A RAG paper",
+            "published": "2025",
+            "excerpt": "RAG combines retrieval with generation.",
+        }
+    ]
 
 
 def test_fallback_graph_query_checks_methods_and_categories_separately(

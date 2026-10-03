@@ -2,8 +2,20 @@
   "default_model": "gemini-3.6-flash",
   "models": [
     {
+      "id": "gemini-3.8-flash",
+      "display_name": "Gemini 3.8 Flash"
+    },
+    {
+      "id": "gemini-3.7-flash",
+      "display_name": "Gemini 3.7 Flash"
+    },
+    {
       "id": "gemini-3.6-flash",
       "display_name": "Gemini 3.6 Flash"
+    },
+    {
+      "id": "gemini-3.5-flash",
+      "display_name": "Gemini 3.5 Flash"
     },
     {
       "id": "gemini-3.5-flash-lite",

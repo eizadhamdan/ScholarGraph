@@ -4,7 +4,7 @@ from contextlib import asynccontextmanager
 from functools import lru_cache
 from typing import Any, Literal
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Response
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field, field_validator
 from starlette.concurrency import run_in_threadpool
@@ -146,7 +146,8 @@ def list_gemini_models() -> dict:
 
 
 @app.get("/api/conversations", response_model=list[ConversationSummary])
-def list_conversations() -> list[dict]:
+def list_conversations(response: Response) -> list[dict]:
+    response.headers["Cache-Control"] = "no-store"
     return chat_store.list_conversations()
 
 
@@ -236,17 +237,20 @@ def _format_model_unavailable_detail(error: ModelUnavailableError) -> str:
 async def chat(request: ChatRequest) -> ChatResponse:
     try:
         catalog = load_gemini_model_catalog()
-        model_id = request.model_id or catalog["default_model"]
-        if model_id not in {model["id"] for model in catalog["models"]}:
-            raise HTTPException(status_code=422, detail="Unknown Gemini model.")
-        return await run_in_threadpool(_run_chat, request, model_id)
-    except HTTPException:
-        raise
     except (OSError, ValueError) as error:
         logger.exception("Gemini model catalog could not be loaded")
         raise HTTPException(
             status_code=500, detail="The Gemini model catalog is invalid."
         ) from error
+
+    model_id = request.model_id or catalog["default_model"]
+    if model_id not in {model["id"] for model in catalog["models"]}:
+        raise HTTPException(status_code=422, detail="Unknown Gemini model.")
+
+    try:
+        return await run_in_threadpool(_run_chat, request, model_id)
+    except HTTPException:
+        raise
     except chat_store.ConversationNotFoundError as error:
         raise HTTPException(
             status_code=404, detail="Conversation not found."

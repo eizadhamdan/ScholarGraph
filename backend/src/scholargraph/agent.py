@@ -66,6 +66,7 @@ class ScholarGraphState(TypedDict, total=False):
     cypher_query: str
     semantic_query: str
     graph_raw_results: list[dict[str, Any]]
+    graph_query_attempts: list[dict[str, Any]]
     vector_raw_results: list[dict[str, Any]]
     fused_paper_ids: list[str]
     expanded_graph_context: dict[str, dict[str, Any]]
@@ -258,21 +259,46 @@ class ScholarGraphAgent:
         user_query = state["user_query"]
 
         print("[2. Graph Retrieval] Running Neo4j traversal...")
-        primary_query_error = None
+        query_attempts = []
         try:
             graph_results = run_cypher_query(cypher)
+            query_attempts.append(
+                {
+                    "kind": "Gemini-generated",
+                    "cypher": cypher,
+                    "result_count": len(graph_results),
+                }
+            )
         except GraphQueryError as error:
             graph_results = []
-            primary_query_error = str(error)
+            query_attempts.append(
+                {
+                    "kind": "Gemini-generated",
+                    "cypher": cypher,
+                    "result_count": 0,
+                    "error": str(error),
+                }
+            )
 
         if not graph_results:
             terms = _fallback_terms(user_query)
             if terms:
                 graph_results = run_cypher_query(FALLBACK_GRAPH_QUERY, {"terms": terms})
+                query_attempts.append(
+                    {
+                        "kind": "keyword fallback",
+                        "cypher": FALLBACK_GRAPH_QUERY,
+                        "result_count": len(graph_results),
+                        "parameters": {"terms": terms},
+                    }
+                )
                 print(f"[Graph Tool] Fallback retrieved {len(graph_results)} rows.")
 
         print(f"[Graph Tool] Retrieved {len(graph_results)} candidate records.")
-        return {"graph_raw_results": graph_results}
+        return {
+            "graph_raw_results": graph_results,
+            "graph_query_attempts": query_attempts,
+        }
 
     def _node_semantic_retrieval(self, state: ScholarGraphState) -> dict[str, Any]:
         """Node 3: Executes vector similarity search against ChromaDB."""
@@ -392,7 +418,26 @@ class ScholarGraphAgent:
         source_ids = {item["paper_id"] for item in top_reranked}
         print(f"[Reranker] Selected top {len(top_reranked)} highest scoring papers.")
 
+        graph_records = state.get("graph_raw_results", [])
+        vector_sources = []
+        for item in vector_raw:
+            metadata = item.get("metadata") or {}
+            vector_sources.append(
+                {
+                    "paper_id": str(item["paper_id"]),
+                    "title": metadata.get("title"),
+                    "published": metadata.get("published"),
+                    "excerpt": str(item.get("document") or ""),
+                }
+            )
+
         retrieval_debug = {
+            "graph_queries": state.get("graph_query_attempts", []),
+            "graph_result_count": len(graph_records),
+            "graph_records": graph_records[:20],
+            "graph_results_truncated": len(graph_records) > 20,
+            "vector_hit_count": len(vector_raw),
+            "vector_sources": vector_sources,
             "fused_candidate_count": len(fused_ids),
             "reranked_papers": [
                 {"paper_id": p["paper_id"], "title": p["title"], "score": p["score"]}

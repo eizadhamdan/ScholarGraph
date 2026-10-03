@@ -17,7 +17,7 @@ from .graph_store import (
     check_graph_connection,
     run_cypher_query,
 )
-from .vector_store import query_vector_store
+from .vector_store import get_documents_by_ids, query_vector_store
 
 
 # =====================================================================
@@ -156,13 +156,19 @@ def reciprocal_rank_fusion(
     rrf_k: int = 60,
     top_n: int = 20,
 ) -> list[str]:
-    """Combines ranked lists from Graph and Vector retrieval via Reciprocal Rank Fusion."""
+    """Combines ranked lists from Graph and Vector retrieval via Reciprocal Rank Fusion.
+
+    Each list contributes at most once per paper, at the paper's best rank. Graph
+    queries often return one row per author or concept, so the same paper ID can
+    repeat; counting every repeat would inflate that paper's score.
+    """
     scores: dict[str, float] = {}
 
-    for rank, paper_id in enumerate(graph_paper_ids):
+    # dict.fromkeys drops repeats but keeps first-occurrence order.
+    for rank, paper_id in enumerate(dict.fromkeys(graph_paper_ids)):
         scores[paper_id] = scores.get(paper_id, 0.0) + (1.0 / (rrf_k + rank + 1))
 
-    for rank, paper_id in enumerate(vector_paper_ids):
+    for rank, paper_id in enumerate(dict.fromkeys(vector_paper_ids)):
         scores[paper_id] = scores.get(paper_id, 0.0) + (1.0 / (rrf_k + rank + 1))
 
     sorted_candidates = sorted(scores.items(), key=lambda x: x[1], reverse=True)
@@ -378,6 +384,24 @@ class ScholarGraphAgent:
             for v in vector_raw
             if v.get("paper_id") is not None
         }
+
+        # Candidates found only through the graph have no vector hit, so they have no
+        # abstract yet. Load those abstracts from ChromaDB by ID so the reranker and
+        # the synthesis step see the same kind of evidence for every candidate.
+        missing_abstract_ids = [pid for pid in fused_ids if not vector_map.get(pid)]
+        if missing_abstract_ids:
+            try:
+                stored_documents = get_documents_by_ids(missing_abstract_ids)
+            except Exception as error:
+                # Same behaviour as before this lookup existed: score on title/concepts.
+                print(
+                    "[Reranker] Could not load abstracts for graph-only candidates: "
+                    f"{error}"
+                )
+                stored_documents = {}
+            for pid, stored in stored_documents.items():
+                if stored.get("document"):
+                    vector_map[pid] = stored["document"]
 
         candidate_payloads = []
         pairs_to_score = []

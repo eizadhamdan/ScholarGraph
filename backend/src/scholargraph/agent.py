@@ -9,7 +9,8 @@ from langgraph.graph import END, START, StateGraph
 from pydantic import BaseModel, Field
 from sentence_transformers import CrossEncoder
 
-from .config import GEMINI_API_KEY
+from .config import GEMINI_API_KEY, load_gemini_model_catalog
+from .gemini import generate_content_with_retry
 from .graph_store import (
     GraphQueryError,
     GraphUnavailableError,
@@ -60,6 +61,7 @@ class AgentResult:
 
 class ScholarGraphState(TypedDict, total=False):
     user_query: str
+    model_name: str
     conversation_history: list[dict[str, str]]
     cypher_query: str
     semantic_query: str
@@ -234,8 +236,11 @@ class ScholarGraphAgent:
         Return paper_id, title, authors, concepts, or categories and limit results to 30 rows.
         """
         try:
-            response = self.client.models.generate_content(
-                model="gemini-3.5-flash-lite",
+            response = generate_content_with_retry(
+                self.client,
+                model=state.get(
+                    "model_name", load_gemini_model_catalog()["default_model"]
+                ),
                 contents=f"{schema_prompt}\nUser Query: {user_query}",
             )
         except Exception as error:
@@ -432,8 +437,11 @@ class ScholarGraphAgent:
         """
 
         try:
-            response = self.client.models.generate_content(
-                model="gemini-3.6-flash",
+            response = generate_content_with_retry(
+                self.client,
+                model=state.get(
+                    "model_name", load_gemini_model_catalog()["default_model"]
+                ),
                 contents=synthesis_prompt,
                 config={
                     "response_mime_type": "application/json",
@@ -476,10 +484,14 @@ class ScholarGraphAgent:
         self,
         user_query: str,
         conversation_history: list[dict[str, str]] | None = None,
+        model_name: str | None = None,
     ) -> AgentResult:
         """Executes the complete GraphRAG pipeline."""
+        if model_name is None:
+            model_name = load_gemini_model_catalog()["default_model"]
         initial_state: ScholarGraphState = {
             "user_query": user_query,
+            "model_name": model_name,
             "conversation_history": conversation_history or [],
         }
         final_state = self.app.invoke(initial_state)
@@ -489,6 +501,9 @@ class ScholarGraphAgent:
         self,
         user_query: str,
         conversation_history: list[dict[str, str]] | None = None,
+        model_name: str | None = None,
     ) -> str:
         """Backwards compatible string output wrapper."""
-        return self.run_with_evidence(user_query, conversation_history).answer
+        return self.run_with_evidence(
+            user_query, conversation_history, model_name
+        ).answer

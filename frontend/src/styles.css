@@ -224,7 +224,7 @@ textarea:focus-visible {
   background: transparent;
   color: inherit;
   cursor: pointer;
-  opacity: 0;
+  opacity: 0.55;
 }
 .conversation-item:hover .conversation-delete,
 .conversation-delete:focus-visible {
@@ -347,6 +347,27 @@ textarea:focus-visible {
   color: #4e5f52;
   font-size: 12px;
   font-weight: 600;
+}
+.model-select-wrap {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  color: #4e5f52;
+}
+.model-select-wrap select {
+  max-width: 220px;
+  padding: 5px 20px 5px 2px;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.model-select-wrap select:disabled {
+  cursor: wait;
+  opacity: 0.65;
 }
 .model-orb {
   display: grid;
@@ -826,6 +847,32 @@ textarea:focus-visible {
   color: inherit;
   cursor: pointer;
 }
+.notice-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 0 0 10px;
+  padding: 9px 12px;
+  border: 1px solid #d5e4d7;
+  border-radius: 7px;
+  background: #eff6ef;
+  color: #356348;
+  font-size: 12px;
+  line-height: 1.5;
+}
+.notice-banner button {
+  display: grid;
+  place-items: center;
+  flex: 0 0 auto;
+  width: 24px;
+  height: 24px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+}
 
 .composer-area {
   flex: 0 0 auto;
@@ -995,6 +1042,14 @@ textarea:focus-visible {
   .model-indicator {
     font-size: 0;
   }
+  .model-select-wrap {
+    max-width: 164px;
+  }
+  .model-select-wrap select {
+    max-width: 126px;
+    padding-right: 12px;
+    font-size: 11px;
+  }
   .model-orb {
     width: 29px;
     height: 29px;
@@ -1006,6 +1061,9 @@ textarea:focus-visible {
   .breadcrumb > span:first-child,
   .breadcrumb-separator {
     display: none;
+  }
+  .conversation-delete {
+    opacity: 1;
   }
   .chat-scroll-empty {
     align-items: flex-start;

@@ -18,6 +18,7 @@ from .agent import (
     ScholarGraphAgent,
 )
 from . import chat_store
+from .config import load_gemini_model_catalog
 from .graph_store import GraphUnavailableError, check_graph_connection
 
 logger = logging.getLogger(__name__)
@@ -72,6 +73,7 @@ class ConversationDetail(ConversationSummary):
 class ChatRequest(BaseModel):
     message: str = Field(min_length=1, max_length=4000)
     conversation_id: str = Field(min_length=1, max_length=64)
+    model_id: str | None = Field(default=None, min_length=1, max_length=100)
 
     @field_validator("message")
     @classmethod
@@ -88,6 +90,16 @@ class ChatResponse(BaseModel):
     retrieval: RetrievalTrace
     user_message: StoredMessage
     assistant_message: StoredMessage
+
+
+class GeminiModel(BaseModel):
+    id: str
+    display_name: str
+
+
+class GeminiModelCatalog(BaseModel):
+    default_model: str
+    models: list[GeminiModel]
 
 
 @lru_cache(maxsize=1)
@@ -122,6 +134,17 @@ def health() -> dict[str, str | bool]:
     }
 
 
+@app.get("/api/models", response_model=GeminiModelCatalog)
+def list_gemini_models() -> dict:
+    try:
+        return load_gemini_model_catalog()
+    except (OSError, ValueError) as error:
+        logger.exception("Gemini model catalog could not be loaded")
+        raise HTTPException(
+            status_code=500, detail="The Gemini model catalog is invalid."
+        ) from error
+
+
 @app.get("/api/conversations", response_model=list[ConversationSummary])
 def list_conversations() -> list[dict]:
     return chat_store.list_conversations()
@@ -150,13 +173,15 @@ def delete_conversation(conversation_id: str) -> None:
         raise HTTPException(status_code=404, detail="Conversation not found.")
 
 
-def _run_chat(request: ChatRequest) -> ChatResponse:
+def _run_chat(request: ChatRequest, model_id: str) -> ChatResponse:
     stored = chat_store.add_user_message(request.conversation_id, request.message)
     if stored is None:
         raise chat_store.ConversationNotFoundError(request.conversation_id)
 
     conversation, user_message, history = stored
-    result: AgentResult = get_agent().run_with_evidence(request.message, history)
+    result: AgentResult = get_agent().run_with_evidence(
+        request.message, history, model_name=model_id
+    )
     assistant_message = chat_store.add_assistant_message(
         request.conversation_id, result.answer, result.retrieval
     )
@@ -169,10 +194,59 @@ def _run_chat(request: ChatRequest) -> ChatResponse:
     )
 
 
+def _format_model_unavailable_detail(error: ModelUnavailableError) -> str:
+    detail = (
+        "Gemini is temporarily unavailable. No answer was generated; "
+        "please retry when the model service is available."
+    )
+    retrieval = error.retrieval if isinstance(error.retrieval, dict) else {}
+    if not retrieval:
+        return detail
+
+    graph_counts: list[str] = []
+    for attempt in retrieval.get("graph_queries", []):
+        if not isinstance(attempt, dict):
+            continue
+        kind = attempt.get("kind", "graph query")
+        result_count = attempt.get("result_count", 0)
+        graph_counts.append(f"{kind}: {result_count} rows")
+
+    if not graph_counts:
+        fused_count = retrieval.get("fused_candidate_count")
+        if fused_count is not None:
+            graph_counts.append(f"RRF candidates: {fused_count} papers")
+        elif retrieval.get("graph_result_count") is not None:
+            graph_counts.append(
+                f"graph results: {retrieval['graph_result_count']} rows"
+            )
+
+    vector_hit_count = retrieval.get("vector_hit_count")
+    parts: list[str] = []
+    if graph_counts:
+        parts.append(", ".join(graph_counts))
+    if vector_hit_count is not None:
+        parts.append(f"ChromaDB: {vector_hit_count} papers")
+
+    if parts:
+        detail += f" Retrieval completed ({'; '.join(parts)})."
+    return detail
+
+
 @app.post("/api/chat", response_model=ChatResponse)
 async def chat(request: ChatRequest) -> ChatResponse:
     try:
-        return await run_in_threadpool(_run_chat, request)
+        catalog = load_gemini_model_catalog()
+        model_id = request.model_id or catalog["default_model"]
+        if model_id not in {model["id"] for model in catalog["models"]}:
+            raise HTTPException(status_code=422, detail="Unknown Gemini model.")
+        return await run_in_threadpool(_run_chat, request, model_id)
+    except HTTPException:
+        raise
+    except (OSError, ValueError) as error:
+        logger.exception("Gemini model catalog could not be loaded")
+        raise HTTPException(
+            status_code=500, detail="The Gemini model catalog is invalid."
+        ) from error
     except chat_store.ConversationNotFoundError as error:
         raise HTTPException(
             status_code=404, detail="Conversation not found."
@@ -197,22 +271,9 @@ async def chat(request: ChatRequest) -> ChatResponse:
         ) from error
     except ModelUnavailableError as error:
         logger.warning("Gemini is unavailable: %s", error.__cause__ or error)
-        detail = (
-            "Gemini is temporarily unavailable. No answer was generated; "
-            "please retry when the model service is available."
-        )
-        if error.retrieval is not None:
-            graph_counts = ", ".join(
-                f"{attempt['kind']}: {attempt['result_count']} rows"
-                for attempt in error.retrieval["graph_queries"]
-            )
-            detail += (
-                f" Retrieval completed ({graph_counts}; "
-                f"ChromaDB: {error.retrieval['vector_hit_count']} papers)."
-            )
         raise HTTPException(
             status_code=503,
-            detail=detail,
+            detail=_format_model_unavailable_detail(error),
         ) from error
     except InsufficientEvidenceError as error:
         raise HTTPException(

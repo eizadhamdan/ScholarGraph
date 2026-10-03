@@ -63,11 +63,14 @@ python -m uvicorn scholargraph.api:app --reload
 The API listens at `http://127.0.0.1:8000` by default. Useful routes:
 
 - `GET /api/health` reports API process state and probes Neo4j. It returns `{"status":"ok","knowledge_graph_available":true}` when Neo4j is reachable, or `{"status":"degraded","knowledge_graph_available":false}` when it is not. It does not check Gemini or ChromaDB connectivity.
+- `GET /api/models` returns the Gemini models configured in `src/scholargraph/gemini_models.json`. Set `default_model` and add `{ "id": "gemini-model-id", "display_name": "Name shown in the UI" }` entries to make models selectable in the frontend. Reload the frontend after editing the file.
 - `GET /api/conversations` lists saved conversations, newest first.
 - `POST /api/conversations` creates an empty conversation.
 - `GET /api/conversations/{id}` loads a conversation and its ordered messages.
 - `DELETE /api/conversations/{id}` deletes the conversation and its messages.
 - `POST /api/chat` accepts JSON such as `{"message":"Find papers about graph neural networks","conversation_id":"..."}` and returns the answer, retrieval trace, and stored user/assistant messages.
+
+`POST /api/chat` also accepts an optional `model_id`, which must match an entry in the model catalog. The selected model is used for both graph-query generation and answer synthesis; omitted IDs use `default_model`. Transient Gemini failures are retried up to three times with exponential backoff.
 
 Chat input is limited to 4,000 characters. The backend loads up to the latest 12 stored turns as synthesis context; the browser cannot supply or alter that history through the chat request.
 

@@ -26,6 +26,7 @@ import remarkGfm from "remark-gfm";
 import {
   checkApi,
   createConversation,
+  getGeminiModels,
   getConversation,
   listConversations,
   removeConversation as removeConversationRequest,
@@ -33,8 +34,8 @@ import {
   ApiRequestError,
   type ChatTurn,
   type ConversationSummary,
+  type GeminiModel,
   type RetrievalTrace,
-  type StoredMessage,
 } from "./lib/api";
 
 type Message = ChatTurn & {
@@ -50,6 +51,8 @@ const suggestions = [
 
 function App() {
   const [conversations, setConversations] = useState<ConversationSummary[]>([]);
+  const [models, setModels] = useState<GeminiModel[]>([]);
+  const [selectedModel, setSelectedModel] = useState("");
   const [activeId, setActiveId] = useState<string | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
   const [draft, setDraft] = useState("");
@@ -58,6 +61,8 @@ function App() {
   const [graphAvailable, setGraphAvailable] = useState<boolean | null>(null);
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
 
@@ -76,16 +81,9 @@ function App() {
       }
     });
     listConversations()
-      .then(async (savedConversations) => {
+      .then((savedConversations) => {
         if (!mounted) return;
         setConversations(savedConversations);
-        if (savedConversations.length > 0) {
-          const latest = await getConversation(savedConversations[0].id);
-          if (mounted) {
-            setActiveId(latest.id);
-            setMessages(latest.messages);
-          }
-        }
       })
       .catch((caught: unknown) => {
         if (mounted) {
@@ -94,6 +92,29 @@ function App() {
             caught instanceof Error
               ? caught.message
               : "Could not load saved conversations.",
+          );
+        }
+      });
+    getGeminiModels()
+      .then((catalog) => {
+        if (!mounted) return;
+        setModels(catalog.models);
+        const savedModel = window.localStorage.getItem(
+          "scholargraph.geminiModel",
+        );
+        const preferredModel =
+          savedModel && catalog.models.some(({ id }) => id === savedModel)
+            ? savedModel
+            : catalog.default_model;
+        setSelectedModel(preferredModel);
+        window.localStorage.setItem("scholargraph.geminiModel", preferredModel);
+      })
+      .catch((caught: unknown) => {
+        if (mounted) {
+          setError(
+            caught instanceof Error
+              ? caught.message
+              : "Could not load available Gemini models.",
           );
         }
       });
@@ -114,6 +135,7 @@ function App() {
         setMessages([]);
         setDraft("");
         setError(null);
+        setNotice(null);
         setMobileNavOpen(false);
         textareaRef.current?.focus();
       }
@@ -134,6 +156,7 @@ function App() {
     setMessages([]);
     setDraft("");
     setError(null);
+    setNotice(null);
     setMobileNavOpen(false);
     textareaRef.current?.focus();
   }
@@ -160,7 +183,10 @@ function App() {
 
   async function removeConversation(event: MouseEvent, id: string) {
     event.stopPropagation();
-    if (busy) return;
+    if (busy || deletingId) return;
+    setDeletingId(id);
+    setError(null);
+    setNotice(null);
     try {
       await removeConversationRequest(id);
       setConversations((current) => current.filter((item) => item.id !== id));
@@ -168,12 +194,15 @@ function App() {
         setActiveId(null);
         setMessages([]);
       }
+      setNotice("Conversation deleted.");
     } catch (caught) {
       setError(
         caught instanceof Error
           ? caught.message
           : "Could not delete this conversation.",
       );
+    } finally {
+      setDeletingId(null);
     }
   }
 
@@ -184,6 +213,7 @@ function App() {
 
     setDraft("");
     setError(null);
+    setNotice(null);
     setBusy(true);
     if (textareaRef.current) textareaRef.current.style.height = "auto";
 
@@ -203,7 +233,11 @@ function App() {
         setConversations((current) => [conversation, ...current]);
       }
       setMessages((current) => [...current, pendingMessage]);
-      const response = await sendChatMessage(content, conversationId);
+      const response = await sendChatMessage(
+        content,
+        conversationId,
+        selectedModel,
+      );
       setConversations((current) => [
         response.conversation,
         ...current.filter(({ id }) => id !== response.conversation.id),
@@ -275,7 +309,7 @@ function App() {
         <button
           className="new-chat-button"
           onClick={startConversation}
-          disabled={busy}
+          disabled={busy || deletingId !== null}
         >
           <Plus size={20} />
           <span>New conversation</span>
@@ -310,7 +344,9 @@ function App() {
                 <button
                   className="conversation-delete"
                   aria-label={`Delete ${conversation.title}`}
-                  disabled={busy}
+                  type="button"
+                  disabled={busy || deletingId !== null}
+                  aria-busy={deletingId === conversation.id}
                   onClick={(event) =>
                     void removeConversation(event, conversation.id)
                   }
@@ -382,12 +418,29 @@ function App() {
             </div>
           </div>
           <div className="topbar-trailing">
-            <span className="model-indicator">
+            <label className="model-select-wrap">
               <span className="model-orb">
                 <Sparkles size={13} />
-              </span>{" "}
-              ScholarGraph Chatbot
-            </span>
+              </span>
+              <select
+                aria-label="Gemini model"
+                value={selectedModel}
+                disabled={models.length === 0 || busy}
+                onChange={(event) => {
+                  setSelectedModel(event.target.value);
+                  window.localStorage.setItem(
+                    "scholargraph.geminiModel",
+                    event.target.value,
+                  );
+                }}
+              >
+                {models.map((model) => (
+                  <option key={model.id} value={model.id}>
+                    {model.display_name}
+                  </option>
+                ))}
+              </select>
+            </label>
             <span className="topbar-divider" />
             <div className="avatar" title="Research workspace">
               S
@@ -500,7 +553,7 @@ function App() {
                                       {attempt.error}
                                     </p>
                                   )}
-                                  {attempt.parameters?.terms && (
+                                  {attempt.parameters?.terms !== undefined && (
                                     <p className="retrieval-note">
                                       Search terms:{" "}
                                       {String(attempt.parameters.terms)}
@@ -607,6 +660,17 @@ function App() {
         </div>
 
         <footer className="composer-area">
+          {notice && (
+            <div className="notice-banner" role="status">
+              <span>{notice}</span>
+              <button
+                onClick={() => setNotice(null)}
+                aria-label="Dismiss notification"
+              >
+                <X size={15} />
+              </button>
+            </div>
+          )}
           {error && messages.length === 0 && (
             <div className="error-banner composer-error" role="alert">
               <span>{error}</span>

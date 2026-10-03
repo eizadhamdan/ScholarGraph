@@ -8,7 +8,7 @@ version = "0.1.0"
 description = "ScholarGraph"
 requires-python = ">=3.12,<3.13"
 
-dependencies = []
+dependencies = ["tenacity>=8.2.0,<10.0.0"]
 
 [project.optional-dependencies]
 web = [
@@ -22,3 +22,6 @@ dev = [
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+scholargraph = ["gemini_models.json"]

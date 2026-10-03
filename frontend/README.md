@@ -34,6 +34,7 @@ Set the backend's `FRONTEND_ORIGIN` environment variable to the exact browser or
 The frontend uses:
 
 - `GET /api/health` to show API availability and whether Neo4j is reachable.
+- `GET /api/models` to populate the model selector from the backend Gemini model catalog. The chosen model is saved in browser local storage and sent with each chat request.
 - `GET /api/conversations` and `GET /api/conversations/{id}` to list and load stored chats.
 - `POST /api/conversations` and `DELETE /api/conversations/{id}` to create and remove chats.
 - `POST /api/chat` with `{ message, conversation_id }` to send a question; history is loaded by the backend from SQLite.
@@ -45,6 +46,7 @@ Each saved assistant response includes an expandable **Retrieval evidence** sect
 ## Features and Data
 
 - Conversation list with create/delete controls
+- Gemini model selector populated by `backend/src/scholargraph/gemini_models.json`
 - Prompt suggestions, multiline composer, and loading/error states
 - Responsive layout for desktop and mobile
 - Recent turns loaded from backend SQLite for contextual follow-up questions

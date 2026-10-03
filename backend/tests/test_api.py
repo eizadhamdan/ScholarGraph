@@ -62,9 +62,12 @@ def test_chat_endpoint_persists_messages_and_uses_stored_history(
             self.calls = []
 
         def run_with_evidence(
-            self, message: str, history: list[dict[str, str]]
+            self,
+            message: str,
+            history: list[dict[str, str]],
+            model_name: str,
         ) -> AgentResult:
-            self.calls.append((message, history))
+            self.calls.append((message, history, model_name))
             return AgentResult(
                 answer="- A grounded answer. [W-source]",
                 retrieval={
@@ -97,7 +100,11 @@ def test_chat_endpoint_persists_messages_and_uses_stored_history(
 
     response = client.post(
         "/api/chat",
-        json={"message": "First question", "conversation_id": conversation_id},
+        json={
+            "message": "First question",
+            "conversation_id": conversation_id,
+            "model_id": "gemini-3.5-flash-lite",
+        },
     )
 
     assert response.status_code == 200
@@ -108,7 +115,9 @@ def test_chat_endpoint_persists_messages_and_uses_stored_history(
     assert result["conversation"]["title"] == "First question"
     assert result["user_message"]["content"] == "First question"
     assert result["assistant_message"]["content"] == "- A grounded answer. [W-source]"
-    assert agent.calls == [("First question", [])]
+    assert agent.calls == [
+        ("First question", [], "gemini-3.5-flash-lite")
+    ]
 
     follow_up = client.post(
         "/api/chat",
@@ -124,6 +133,7 @@ def test_chat_endpoint_persists_messages_and_uses_stored_history(
                 "content": "- A grounded answer. [W-source]",
             },
         ],
+        "gemini-3.6-flash",
     )
 
     detail = client.get(f"/api/conversations/{conversation_id}").json()
@@ -164,7 +174,10 @@ def test_chat_refuses_answer_when_graph_is_unavailable(
 ) -> None:
     class GraphUnavailableAgent:
         def run_with_evidence(
-            self, message: str, history: list[dict[str, str]]
+            self,
+            message: str,
+            history: list[dict[str, str]],
+            model_name: str,
         ) -> AgentResult:
             raise GraphUnavailableError("Neo4j is offline")
 
@@ -186,7 +199,12 @@ def test_gemini_outage_reports_completed_retrieval(
     client: TestClient, monkeypatch
 ) -> None:
     class GeminiUnavailableAgent:
-        def run_with_evidence(self, message: str, history: list[dict[str, str]]):
+        def run_with_evidence(
+            self,
+            message: str,
+            history: list[dict[str, str]],
+            model_name: str,
+        ):
             raise ModelUnavailableError(
                 "Gemini is unavailable during synthesis.",
                 retrieval={
@@ -209,6 +227,90 @@ def test_gemini_outage_reports_completed_retrieval(
     assert "Gemini is temporarily unavailable" in response.json()["detail"]
     assert "keyword fallback: 2 rows" in response.json()["detail"]
     assert "ChromaDB: 5 papers" in response.json()["detail"]
+
+
+def test_gemini_outage_handles_partial_retrieval_payload(
+    client: TestClient, monkeypatch
+) -> None:
+    class GeminiUnavailableAgent:
+        def run_with_evidence(
+            self,
+            message: str,
+            history: list[dict[str, str]],
+            model_name: str,
+        ):
+            raise ModelUnavailableError(
+                "Gemini is unavailable during synthesis.",
+                retrieval={
+                    "fused_candidate_count": 15,
+                    "reranked_papers": [{"paper_id": "W-123", "score": 0.9}],
+                },
+            )
+
+    monkeypatch.setattr(api, "get_agent", lambda: GeminiUnavailableAgent())
+    conversation_id = client.post("/api/conversations").json()["id"]
+    response = client.post(
+        "/api/chat",
+        json={"message": "Research question", "conversation_id": conversation_id},
+    )
+
+    assert response.status_code == 503
+    assert "Retrieval completed" in response.json()["detail"]
+    assert "RRF candidates: 15 papers" in response.json()["detail"]
+
+
+def test_gemini_model_catalog_lists_configured_models(client: TestClient) -> None:
+    response = client.get("/api/models")
+
+    assert response.status_code == 200
+    catalog = response.json()
+    assert catalog["default_model"] == "gemini-3.6-flash"
+    assert {model["id"] for model in catalog["models"]} == {
+        "gemini-3.6-flash",
+        "gemini-3.5-flash-lite",
+    }
+
+
+def test_chat_rejects_unconfigured_model(client: TestClient, monkeypatch) -> None:
+    monkeypatch.setattr(api, "get_agent", lambda: pytest.fail("agent must not run"))
+    conversation_id = client.post("/api/conversations").json()["id"]
+
+    response = client.post(
+        "/api/chat",
+        json={
+            "message": "Research question",
+            "conversation_id": conversation_id,
+            "model_id": "not-a-configured-model",
+        },
+    )
+
+    assert response.status_code == 422
+    assert response.json()["detail"] == "Unknown Gemini model."
+
+
+def test_gemini_generation_retries_transient_errors() -> None:
+    class TemporaryGeminiFailure(Exception):
+        code = 503
+
+    class Models:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def generate_content(self, **_kwargs):
+            self.calls += 1
+            if self.calls == 1:
+                raise TemporaryGeminiFailure("Temporarily unavailable")
+            return SimpleNamespace(text="generated")
+
+    models = Models()
+    result = agent_module.generate_content_with_retry(
+        SimpleNamespace(models=models),
+        model="gemini-3.6-flash",
+        contents="prompt",
+    )
+
+    assert result.text == "generated"
+    assert models.calls == 2
 
 
 def test_graph_query_failure_is_not_returned_as_result_data(monkeypatch) -> None:

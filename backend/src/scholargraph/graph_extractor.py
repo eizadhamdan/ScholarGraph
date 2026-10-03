@@ -4,6 +4,7 @@ from google import genai
 from pydantic import BaseModel, Field
 from tqdm import tqdm
 from .config import GEMINI_API_KEY
+from .gemini import generate_content_with_retry
 
 
 class DeepConcepts(BaseModel):
@@ -59,7 +60,8 @@ def extract_graph_triples(
         if client and i < llm_sample_limit and summary:
             prompt = f"Title: {title}\nAbstract: {summary}\nExtract 3-5 core AI techniques/methods/architectures."
             try:
-                response = client.models.generate_content(
+                response = generate_content_with_retry(
+                    client,
                     model="gemini-3.6-flash",
                     contents=prompt,
                     config={

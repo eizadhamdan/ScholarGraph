@@ -8,6 +8,7 @@ from google.colab import userdata, files
 from pydantic import BaseModel, Field
 from sentence_transformers import SentenceTransformer
 from tqdm import tqdm
+from .gemini import generate_content_with_retry
 
 """Fetch Papers"""
 
@@ -141,7 +142,8 @@ for i, paper in enumerate(tqdm(papers)):
     if i < 500:
         prompt = f"Title: {title}\nAbstract: {summary}\nExtract core techniques/models."
         try:
-            response = client.models.generate_content(
+            response = generate_content_with_retry(
+                client,
                 model="gemini-3.6-flash",
                 contents=prompt,
                 config={

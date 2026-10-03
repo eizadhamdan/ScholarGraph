@@ -17,7 +17,7 @@ from .graph_store import (
     check_graph_connection,
     run_cypher_query,
 )
-from .vector_store import query_vector_store
+from .vector_store import get_documents_by_ids, query_vector_store
 
 
 # =====================================================================
@@ -40,8 +40,18 @@ class GroundingValidationError(RuntimeError):
 
 
 class GroundedClaim(BaseModel):
-    statement: str = Field(min_length=1)
-    source_ids: list[str] = Field(min_length=1)
+    statement: str = Field(
+        min_length=1,
+        description=(
+            "A substantive finding in plain prose, 2-4 sentences: what the work does, "
+            "how it does it, and what it shows. Do not put paper IDs or bracketed "
+            "citations in this text."
+        ),
+    )
+    source_ids: list[str] = Field(
+        min_length=1,
+        description="IDs of the papers supporting this statement, from the allowed list only.",
+    )
 
 
 class GroundedResponse(BaseModel):
@@ -140,6 +150,14 @@ STOP_WORDS = {
 }
 
 
+# How many claims the synthesis step is asked to write. Raise these (or the 2-4
+# sentence guidance in the prompt) for longer answers, lower them for shorter ones.
+SYNTHESIS_MIN_CLAIMS = 4
+SYNTHESIS_MAX_CLAIMS = 7
+
+OPENALEX_WORK_ID = re.compile(r"^W\d+$")
+
+
 def _fallback_terms(user_query: str) -> list[str]:
     normalized = re.sub(r"[^a-z0-9]+", " ", user_query.lower())
     terms = [
@@ -156,17 +174,81 @@ def reciprocal_rank_fusion(
     rrf_k: int = 60,
     top_n: int = 20,
 ) -> list[str]:
-    """Combines ranked lists from Graph and Vector retrieval via Reciprocal Rank Fusion."""
+    """Combines ranked lists from Graph and Vector retrieval via Reciprocal Rank Fusion.
+
+    Each list contributes at most once per paper, at the paper's best rank. Graph
+    queries often return one row per author or concept, so the same paper ID can
+    repeat; counting every repeat would inflate that paper's score.
+    """
     scores: dict[str, float] = {}
 
-    for rank, paper_id in enumerate(graph_paper_ids):
+    # dict.fromkeys drops repeats but keeps first-occurrence order.
+    for rank, paper_id in enumerate(dict.fromkeys(graph_paper_ids)):
         scores[paper_id] = scores.get(paper_id, 0.0) + (1.0 / (rrf_k + rank + 1))
 
-    for rank, paper_id in enumerate(vector_paper_ids):
+    for rank, paper_id in enumerate(dict.fromkeys(vector_paper_ids)):
         scores[paper_id] = scores.get(paper_id, 0.0) + (1.0 / (rrf_k + rank + 1))
 
     sorted_candidates = sorted(scores.items(), key=lambda x: x[1], reverse=True)
     return [paper_id for paper_id, _ in sorted_candidates[:top_n]]
+
+
+def _short_authors(authors: list[str]) -> str:
+    names = [name for name in authors if name]
+    if len(names) <= 2:
+        return " and ".join(names)
+    return f"{names[0]} et al."
+
+
+def _publication_year(published: Any) -> str:
+    year = str(published or "")[:4]
+    return year if year.isdigit() else ""
+
+
+def _format_source_line(number: int, paper_id: str, paper: dict[str, Any]) -> str:
+    title = (paper.get("title") or "").strip() or "Untitled paper"
+    line = f"{number}. {title}"
+    details = ", ".join(
+        part
+        for part in (
+            _short_authors(paper.get("authors") or []),
+            _publication_year(paper.get("published")),
+        )
+        if part
+    )
+    if details:
+        line += f" ({details})"
+    if OPENALEX_WORK_ID.match(paper_id):
+        line += f" — [OpenAlex](https://openalex.org/{paper_id})"
+    return line
+
+
+def format_grounded_answer(
+    claims: list[GroundedClaim], evidence: list[dict[str, Any]]
+) -> str:
+    """Renders validated claims as readable Markdown with numbered citations.
+
+    Paper IDs stay in the structured claims, where they are validated. The reader
+    sees [1], [2], ... in the text and a Sources list with titles instead.
+    """
+    papers = {item["paper_id"]: item for item in evidence}
+    numbers: dict[str, int] = {}
+    blocks: list[str] = []
+
+    for index, claim in enumerate(claims):
+        labels = []
+        for source_id in dict.fromkeys(claim.source_ids):
+            number = numbers.setdefault(source_id, len(numbers) + 1)
+            labels.append(f"[{number}]")
+        text = f"{claim.statement.strip()} {' '.join(labels)}"
+        # The first claim is the overview paragraph; the rest are bullet points.
+        blocks.append(text if index == 0 else f"- {text}")
+
+    source_lines = [
+        _format_source_line(number, source_id, papers.get(source_id, {}))
+        for source_id, number in numbers.items()
+    ]
+    return "\n\n".join([*blocks, "**Sources**", "\n".join(source_lines)])
 
 
 # =====================================================================
@@ -378,13 +460,39 @@ class ScholarGraphAgent:
             for v in vector_raw
             if v.get("paper_id") is not None
         }
+        metadata_map = {
+            str(v["paper_id"]): v.get("metadata") or {}
+            for v in vector_raw
+            if v.get("paper_id") is not None
+        }
+
+        # Candidates found only through the graph have no vector hit, so they have no
+        # abstract yet. Load those abstracts from ChromaDB by ID so the reranker and
+        # the synthesis step see the same kind of evidence for every candidate.
+        missing_abstract_ids = [pid for pid in fused_ids if not vector_map.get(pid)]
+        if missing_abstract_ids:
+            try:
+                stored_documents = get_documents_by_ids(missing_abstract_ids)
+            except Exception as error:
+                # Same behaviour as before this lookup existed: score on title/concepts.
+                print(
+                    "[Reranker] Could not load abstracts for graph-only candidates: "
+                    f"{error}"
+                )
+                stored_documents = {}
+            for pid, stored in stored_documents.items():
+                if stored.get("document"):
+                    vector_map[pid] = stored["document"]
+                metadata_map.setdefault(pid, stored.get("metadata") or {})
 
         candidate_payloads = []
         pairs_to_score = []
 
         for pid in fused_ids:
             graph_meta = expanded_graph.get(pid, {})
-            title = graph_meta.get("title", "")
+            stored_meta = metadata_map.get(pid, {})
+            # Neo4j is the primary source for titles; ChromaDB metadata fills gaps.
+            title = graph_meta.get("title") or stored_meta.get("title") or ""
             concepts = ", ".join(graph_meta.get("concepts", []))
             abstract = vector_map.get(pid, "")
 
@@ -399,6 +507,7 @@ class ScholarGraphAgent:
                     "authors": graph_meta.get("authors", []),
                     "concepts": graph_meta.get("concepts", []),
                     "categories": graph_meta.get("categories", []),
+                    "published": stored_meta.get("published"),
                     "abstract": abstract,
                     "text_payload": text_payload,
                 }
@@ -464,8 +573,23 @@ class ScholarGraphAgent:
 
         synthesis_prompt = f"""
         You are ScholarGraph, an expert academic research assistant.
-        Answer the query using ONLY the reranked evidence below. Every claim MUST be supported and explicitly cite
-        the paper ID in source_ids. Never hallucinate facts or citations outside ALLOWED SOURCE IDS.
+        Write a detailed, well-organized answer to the USER QUERY using ONLY the
+        reranked evidence below. Every claim MUST be supported by that evidence and list
+        its supporting paper IDs in source_ids. Never hallucinate facts or citations
+        outside ALLOWED SOURCE IDS.
+
+        HOW TO WRITE THE ANSWER:
+        - Return between {SYNTHESIS_MIN_CLAIMS} and {SYNTHESIS_MAX_CLAIMS} claims.
+        - Claim 1 is an overview: 2-3 sentences that directly answer the question.
+        - Each later claim covers one theme, method, or finding in 2-4 sentences: what
+          the work does, how it does it (models, methods, data), and what it shows or
+          why it matters. Use the specific details in each paper's title, concepts and
+          abstract rather than general statements.
+        - Connect papers where they agree, differ, or build on each other. Do not just
+          restate one abstract per claim.
+        - If the evidence only partly answers the question, say what is missing.
+        - Put paper IDs ONLY in source_ids. Never write IDs, brackets or citation
+          markers inside a statement; citations are added automatically.
 
         CONVERSATION HISTORY (for context only):
         {history_context}
@@ -506,18 +630,16 @@ class ScholarGraphAgent:
                 "Model failed to return valid evidence-backed claims."
             ) from error
 
-        answer_lines = []
         for claim in grounded_response.claims:
             unsupported = set(claim.source_ids) - source_ids
             if unsupported:
                 raise GroundingValidationError(
                     f"Model returned invalid source citations: {unsupported}"
                 )
-            citations = " ".join(f"[{sid}]" for sid in claim.source_ids)
-            answer_lines.append(f"- {claim.statement} {citations}")
 
         agent_result = AgentResult(
-            answer="\n\n".join(answer_lines), retrieval=retrieval
+            answer=format_grounded_answer(grounded_response.claims, evidence),
+            retrieval=retrieval,
         )
         return {"result": agent_result}
 

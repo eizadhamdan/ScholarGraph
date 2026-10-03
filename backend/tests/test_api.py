@@ -510,7 +510,11 @@ def test_agent_runs_graph_then_vector_then_grounded_synthesis(monkeypatch) -> No
         "graph_expansion",
         "synthesis",
     ]
-    assert result.answer == "- RAG combines retrieval with generation. [W-vector]"
+    assert result.answer == (
+        "RAG combines retrieval with generation. [1]\n\n"
+        "**Sources**\n\n"
+        "1. A RAG paper (2025)"
+    )
     assert result.retrieval["graph_result_count"] == 1
     assert [attempt["kind"] for attempt in result.retrieval["graph_queries"]] == [
         "Gemini-generated",

@@ -1,6 +1,9 @@
 # Neo4j interface & Cypher execution
 import argparse
+import atexit
 import json
+import threading
+
 from neo4j import GraphDatabase
 from .config import NEO4J_PASSWORD, NEO4J_URI, NEO4J_USERNAME
 
@@ -13,25 +16,47 @@ class GraphQueryError(RuntimeError):
     pass
 
 
+# One driver (and therefore one connection pool) is shared by the whole process.
+# The Neo4j driver is thread-safe, so FastAPI's worker threads can all use it.
+_driver = None
+_driver_lock = threading.Lock()
+
+
 def get_neo4j_driver():
-    return GraphDatabase.driver(
-        NEO4J_URI,
-        auth=(NEO4J_USERNAME, NEO4J_PASSWORD),
-        connection_timeout=5.0,
-    )
+    """Returns the shared Neo4j driver, creating it on first use.
+
+    Callers must not close the returned driver; use close_neo4j_driver() at shutdown.
+    """
+    global _driver
+    if _driver is None:
+        with _driver_lock:
+            if _driver is None:
+                _driver = GraphDatabase.driver(
+                    NEO4J_URI,
+                    auth=(NEO4J_USERNAME, NEO4J_PASSWORD),
+                    connection_timeout=5.0,
+                )
+    return _driver
+
+
+def close_neo4j_driver() -> None:
+    """Closes the shared driver. The next get_neo4j_driver() call creates a new one."""
+    global _driver
+    with _driver_lock:
+        driver, _driver = _driver, None
+    if driver is not None:
+        driver.close()
+
+
+atexit.register(close_neo4j_driver)
 
 
 def check_graph_connection() -> bool:
-    driver = None
     try:
-        driver = get_neo4j_driver()
-        driver.verify_connectivity()
+        get_neo4j_driver().verify_connectivity()
         return True
     except Exception:
         return False
-    finally:
-        if driver is not None:
-            driver.close()
 
 
 def import_triples_to_neo4j(json_path: str):
@@ -89,13 +114,11 @@ def import_triples_to_neo4j(json_path: str):
             batch = graph_data[i : i + batch_size]
             session.run(query, batch=batch)
 
-    driver.close()
     print("Neo4j database hydration complete!")
 
 
 def run_cypher_query(cypher: str, parameters: dict | None = None) -> list[dict]:
     """Executes a Cypher query against Neo4j and returns dict results."""
-    driver = None
     try:
         driver = get_neo4j_driver()
         with driver.session() as session:
@@ -113,9 +136,6 @@ def run_cypher_query(cypher: str, parameters: dict | None = None) -> list[dict]:
         raise GraphUnavailableError(
             "Neo4j is unavailable or the graph query failed."
         ) from error
-    finally:
-        if driver is not None:
-            driver.close()
 
 
 if __name__ == "__main__":
@@ -127,5 +147,8 @@ if __name__ == "__main__":
         help="Path to graph triples JSON",
     )
     args = parser.parse_args()
-    if args.import_path:
-        import_triples_to_neo4j(args.import_path)
+    try:
+        if args.import_path:
+            import_triples_to_neo4j(args.import_path)
+    finally:
+        close_neo4j_driver()

@@ -72,6 +72,35 @@ def query_vector_store(query_text: str, n_results: int = 5) -> list[dict]:
     return formatted
 
 
+def get_documents_by_ids(paper_ids: list[str]) -> dict[str, dict]:
+    """Loads stored abstracts and metadata for specific paper IDs from ChromaDB.
+
+    Used for candidates that came from the graph only and therefore have no
+    vector-search hit. IDs that are not in the collection are simply omitted.
+    """
+    if not paper_ids:
+        return {}
+
+    client = get_chroma_client()
+    collection = client.get_collection(name="arxiv_papers")
+    results = collection.get(
+        ids=[str(paper_id) for paper_id in paper_ids],
+        include=["documents", "metadatas"],
+    )
+
+    ids = results.get("ids") or []
+    documents = results.get("documents") or []
+    metadatas = results.get("metadatas") or []
+
+    found: dict[str, dict] = {}
+    for index, paper_id in enumerate(ids):
+        found[str(paper_id)] = {
+            "document": (documents[index] if index < len(documents) else None) or "",
+            "metadata": (metadatas[index] if index < len(metadatas) else None) or {},
+        }
+    return found
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="ChromaDB management.")
     parser.add_argument(

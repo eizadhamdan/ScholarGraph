@@ -1,4 +1,4 @@
-# LangGraph orchestration engine
+# LangGraph Orchestration Engine with Reciprocal Rank Fusion & Reranking
 import json
 import re
 from dataclasses import dataclass
@@ -7,6 +7,7 @@ from typing import Any, TypedDict
 from google import genai
 from langgraph.graph import END, START, StateGraph
 from pydantic import BaseModel, Field
+from sentence_transformers import CrossEncoder
 
 from .config import GEMINI_API_KEY
 from .graph_store import (
@@ -61,16 +62,19 @@ class ScholarGraphState(TypedDict, total=False):
     user_query: str
     conversation_history: list[dict[str, str]]
     cypher_query: str
-    graph_results: list[dict[str, Any]]
-    graph_queries: list[dict[str, Any]]
-    vector_results: list[dict[str, Any]]
+    semantic_query: str
+    graph_raw_results: list[dict[str, Any]]
+    vector_raw_results: list[dict[str, Any]]
+    fused_paper_ids: list[str]
+    expanded_graph_context: dict[str, dict[str, Any]]
+    reranked_evidence: list[dict[str, Any]]
     source_ids: set[str]
     retrieval: dict[str, Any]
     result: AgentResult
 
 
 # =====================================================================
-# Constants & Helpers
+# Constants & Utility Functions
 # =====================================================================
 
 FALLBACK_GRAPH_QUERY = """
@@ -88,7 +92,20 @@ WITH p, methods, categories,
 WHERE size(matched_terms) > 0
 RETURN p.id AS paper_id, p.title AS title, methods, categories, matched_terms
 ORDER BY size(matched_terms) DESC, p.id
-LIMIT 50
+LIMIT 30
+"""
+
+EXPANSION_GRAPH_QUERY = """
+MATCH (p:Paper)
+WHERE p.id IN $paper_ids
+OPTIONAL MATCH (a:Author)-[:AUTHORED]->(p)
+OPTIONAL MATCH (p)-[:USES_METHOD]->(m:Concept)
+OPTIONAL MATCH (p)-[:IN_CATEGORY]->(c:Category)
+RETURN p.id AS paper_id,
+       p.title AS title,
+       collect(DISTINCT a.name) AS authors,
+       collect(DISTINCT m.name) AS concepts,
+       collect(DISTINCT c.name) AS categories
 """
 
 STOP_WORDS = {
@@ -131,6 +148,25 @@ def _fallback_terms(user_query: str) -> list[str]:
     return list(dict.fromkeys(terms))[:10]
 
 
+def reciprocal_rank_fusion(
+    graph_paper_ids: list[str],
+    vector_paper_ids: list[str],
+    rrf_k: int = 60,
+    top_n: int = 20,
+) -> list[str]:
+    """Combines ranked lists from Graph and Vector retrieval via Reciprocal Rank Fusion."""
+    scores: dict[str, float] = {}
+
+    for rank, paper_id in enumerate(graph_paper_ids):
+        scores[paper_id] = scores.get(paper_id, 0.0) + (1.0 / (rrf_k + rank + 1))
+
+    for rank, paper_id in enumerate(vector_paper_ids):
+        scores[paper_id] = scores.get(paper_id, 0.0) + (1.0 / (rrf_k + rank + 1))
+
+    sorted_candidates = sorted(scores.items(), key=lambda x: x[1], reverse=True)
+    return [paper_id for paper_id, _ in sorted_candidates[:top_n]]
+
+
 # =====================================================================
 # LangGraph Agent Implementation
 # =====================================================================
@@ -139,22 +175,32 @@ def _fallback_terms(user_query: str) -> list[str]:
 class ScholarGraphAgent:
     def __init__(self):
         self.client = genai.Client(api_key=GEMINI_API_KEY)
+        # BAAI BGE Reranker cross-encoder for precise neural relevance scoring
+        self.reranker = CrossEncoder("BAAI/bge-reranker-base")
         self.app = self._build_graph()
 
     def _build_graph(self):
-        """Constructs and compiles the LangGraph StateGraph pipeline."""
+        """Constructs and compiles the complete LangGraph DAG pipeline."""
         workflow = StateGraph(ScholarGraphState)
 
-        # Register Nodes
-        workflow.add_node("plan_cypher", self._node_plan_cypher)
-        workflow.add_node("retrieve_evidence", self._node_retrieve_evidence)
-        workflow.add_node("synthesize_answer", self._node_synthesize_answer)
+        # Nodes
+        workflow.add_node("query_understanding", self._node_query_understanding)
+        workflow.add_node("graph_retrieval", self._node_graph_retrieval)
+        workflow.add_node("semantic_retrieval", self._node_semantic_retrieval)
+        workflow.add_node("candidate_fusion", self._node_candidate_fusion)
+        workflow.add_node("graph_expansion", self._node_graph_expansion)
+        workflow.add_node("reranker", self._node_reranker)
+        workflow.add_node("synthesis", self._node_synthesis)
 
-        # Define Edges
-        workflow.add_edge(START, "plan_cypher")
-        workflow.add_edge("plan_cypher", "retrieve_evidence")
-        workflow.add_edge("retrieve_evidence", "synthesize_answer")
-        workflow.add_edge("synthesize_answer", END)
+        # Edges
+        workflow.add_edge(START, "query_understanding")
+        workflow.add_edge("query_understanding", "graph_retrieval")
+        workflow.add_edge("graph_retrieval", "semantic_retrieval")
+        workflow.add_edge("semantic_retrieval", "candidate_fusion")
+        workflow.add_edge("candidate_fusion", "graph_expansion")
+        workflow.add_edge("graph_expansion", "reranker")
+        workflow.add_edge("reranker", "synthesis")
+        workflow.add_edge("synthesis", END)
 
         return workflow.compile()
 
@@ -162,15 +208,15 @@ class ScholarGraphAgent:
     # LangGraph Nodes
     # -----------------------------------------------------------------
 
-    def _node_plan_cypher(self, state: ScholarGraphState) -> dict[str, Any]:
-        """Node 1: Validates database connectivity and plans Cypher query via LLM."""
+    def _node_query_understanding(self, state: ScholarGraphState) -> dict[str, Any]:
+        """Node 1: Parses query intent and outputs a structured Cypher query and search terms."""
         if not check_graph_connection():
             raise GraphUnavailableError(
                 "Neo4j is unavailable; refusing to generate a response."
             )
 
         user_query = state["user_query"]
-        print(f"\n[LangGraph: plan_cypher] Analyzing query: '{user_query}'...")
+        print(f"\n[1. Query Understanding] Analyzing user prompt: '{user_query}'...")
 
         schema_prompt = """
         You are a Cypher query generator for a Neo4j database with the following schema:
@@ -186,11 +232,11 @@ class ScholarGraphAgent:
 
         Return one read-only Cypher query without markdown formatting or code blocks.
         Never use CREATE, MERGE, DELETE, SET, REMOVE, DROP, or CALL procedures.
-        Return only relevant properties and limit results to 50 rows.
+        Return paper_id, title, authors, concepts, or categories and limit results to 30 rows.
         """
         try:
             response = self.client.models.generate_content(
-                model="gemini-3.6-flash",
+                model="gemini-3.5-flash-lite",
                 contents=f"{schema_prompt}\nUser Query: {user_query}",
             )
         except Exception as error:
@@ -199,14 +245,15 @@ class ScholarGraphAgent:
             ) from error
 
         cypher = response.text.replace("```cypher", "").replace("```", "").strip()
-        print(f"[Graph Tool] Generated Cypher:\n  {cypher}")
-        return {"cypher_query": cypher}
+        print(f"[Graph Query] Generated Cypher:\n  {cypher}")
+        return {"cypher_query": cypher, "semantic_query": user_query}
 
-    def _node_retrieve_evidence(self, state: ScholarGraphState) -> dict[str, Any]:
-        """Node 2: Fetches evidence from Neo4j (Graph) and ChromaDB (Vector store)."""
-        user_query = state["user_query"]
+    def _node_graph_retrieval(self, state: ScholarGraphState) -> dict[str, Any]:
+        """Node 2: Executes Cypher graph traversal against Neo4j with keyword fallbacks."""
         cypher = state["cypher_query"]
+        user_query = state["user_query"]
 
+        print("[2. Graph Retrieval] Running Neo4j traversal...")
         primary_query_error = None
         try:
             graph_results = run_cypher_query(cypher)
@@ -214,117 +261,164 @@ class ScholarGraphAgent:
             graph_results = []
             primary_query_error = str(error)
 
-        print(f"[Graph Tool] Retrieved {len(graph_results)} graph rows.")
-        graph_queries = [
-            {
-                "kind": "Gemini-generated",
-                "cypher": cypher,
-                "result_count": len(graph_results),
-                "error": primary_query_error,
-            }
-        ]
-
-        # Keyword Fallback search if primary Cypher yielded no rows
         if not graph_results:
             terms = _fallback_terms(user_query)
             if terms:
-                fallback_results = run_cypher_query(
-                    FALLBACK_GRAPH_QUERY, {"terms": terms}
-                )
-                graph_queries.append(
-                    {
-                        "kind": "keyword fallback",
-                        "cypher": FALLBACK_GRAPH_QUERY,
-                        "parameters": {"terms": terms},
-                        "result_count": len(fallback_results),
-                    }
-                )
-                if fallback_results:
-                    graph_results = fallback_results
-                    print(
-                        f"[Graph Tool] Keyword fallback retrieved "
-                        f"{len(graph_results)} graph rows."
-                    )
+                graph_results = run_cypher_query(FALLBACK_GRAPH_QUERY, {"terms": terms})
+                print(f"[Graph Tool] Fallback retrieved {len(graph_results)} rows.")
 
-        # Vector Store Search
-        print("[Vector Tool] Executing semantic search on ChromaDB...")
-        vector_results = query_vector_store(user_query, n_results=5)
-        print(f"[Vector Tool] Retrieved {len(vector_results)} paper abstracts.")
+        print(f"[Graph Tool] Retrieved {len(graph_results)} candidate records.")
+        return {"graph_raw_results": graph_results}
 
-        # Serialize & Extract allowed Source IDs for grounding verification
-        graph_results = json.loads(json.dumps(graph_results, default=str))
-        vector_results = json.loads(json.dumps(vector_results, default=str))
-        source_ids = {
-            str(result["paper_id"])
-            for result in vector_results
-            if result.get("paper_id") is not None
+    def _node_semantic_retrieval(self, state: ScholarGraphState) -> dict[str, Any]:
+        """Node 3: Executes vector similarity search against ChromaDB."""
+        semantic_query = state.get("semantic_query", state["user_query"])
+        print("[3. Semantic Retrieval] Performing dense vector search in ChromaDB...")
+        vector_results = query_vector_store(semantic_query, n_results=15)
+        print(f"[Vector Tool] Retrieved {len(vector_results)} paper candidates.")
+        return {"vector_raw_results": vector_results}
+
+    def _node_candidate_fusion(self, state: ScholarGraphState) -> dict[str, Any]:
+        """Node 4: Candidate Fusion using Reciprocal Rank Fusion (RRF)."""
+        graph_raw = state.get("graph_raw_results", [])
+        vector_raw = state.get("vector_raw_results", [])
+
+        print("[4. Candidate Fusion] Running Reciprocal Rank Fusion (RRF)...")
+
+        # Extract paper IDs preserving retrieved order
+        graph_ids = []
+        for row in graph_raw:
+            if isinstance(row, dict):
+                p_id = row.get("paper_id") or row.get("p.id") or row.get("id")
+                if p_id:
+                    graph_ids.append(str(p_id))
+
+        vector_ids = [
+            str(item["paper_id"])
+            for item in vector_raw
+            if item.get("paper_id") is not None
+        ]
+
+        fused_ids = reciprocal_rank_fusion(graph_ids, vector_ids, rrf_k=60, top_n=15)
+        print(f"[Fusion] Fused top candidates: {fused_ids}")
+
+        if not fused_ids:
+            raise InsufficientEvidenceError(
+                "Candidate fusion yielded no valid paper matches from graph or vector stores."
+            )
+
+        return {"fused_paper_ids": fused_ids}
+
+    def _node_graph_expansion(self, state: ScholarGraphState) -> dict[str, Any]:
+        """Node 5: Fetches 1-hop subgraphs (authors, methods, categories) for fused candidate papers."""
+        fused_ids = state["fused_paper_ids"]
+        print(
+            f"[5. Graph Expansion] Expanding 1-hop subgraphs for {len(fused_ids)} papers..."
+        )
+
+        expanded_records = run_cypher_query(
+            EXPANSION_GRAPH_QUERY, {"paper_ids": fused_ids}
+        )
+
+        expanded_map = {}
+        for record in expanded_records:
+            pid = str(record["paper_id"])
+            expanded_map[pid] = {
+                "title": record.get("title", ""),
+                "authors": record.get("authors", []),
+                "concepts": record.get("concepts", []),
+                "categories": record.get("categories", []),
+            }
+
+        return {"expanded_graph_context": expanded_map}
+
+    def _node_reranker(self, state: ScholarGraphState) -> dict[str, Any]:
+        """Node 6: Cross-Encoder neural reranking over enriched paper payloads."""
+        user_query = state["user_query"]
+        fused_ids = state["fused_paper_ids"]
+        vector_raw = state.get("vector_raw_results", [])
+        expanded_graph = state.get("expanded_graph_context", {})
+
+        print(
+            f"[6. Reranker] Scoring and reranking top candidates using Cross-Encoder..."
+        )
+
+        vector_map = {
+            str(v["paper_id"]): v.get("document", "")
+            for v in vector_raw
+            if v.get("paper_id") is not None
         }
-        for row in graph_results:
-            if not isinstance(row, dict):
-                continue
-            for key, value in row.items():
-                normalized_key = key.rsplit(".", 1)[-1].replace("_", " ").lower()
-                if (
-                    normalized_key in {"id", "paper id", "paperid"}
-                    and value is not None
-                ):
-                    source_ids.add(str(value))
 
-        if not graph_results and not vector_results:
-            raise InsufficientEvidenceError(
-                "Neither the knowledge graph nor vector database returned evidence."
-            )
-        if not source_ids:
-            raise InsufficientEvidenceError(
-                "Retrieved data did not contain source IDs that can be cited."
-            )
+        candidate_payloads = []
+        pairs_to_score = []
 
-        retrieval = {
-            "graph_queries": graph_queries,
-            "graph_result_count": len(graph_results),
-            "graph_records": graph_results[:20],
-            "graph_results_truncated": len(graph_results) > 20,
-            "vector_hit_count": len(vector_results),
-            "vector_sources": [
+        for pid in fused_ids:
+            graph_meta = expanded_graph.get(pid, {})
+            title = graph_meta.get("title", "")
+            concepts = ", ".join(graph_meta.get("concepts", []))
+            abstract = vector_map.get(pid, "")
+
+            # Construct textual payload for the reranker model
+            text_payload = (
+                f"Title: {title} | Concepts: {concepts} | Abstract: {abstract}"
+            )
+            candidate_payloads.append(
                 {
-                    "paper_id": str(result["paper_id"]),
-                    "title": result.get("metadata", {}).get("title"),
-                    "published": result.get("metadata", {}).get("published"),
-                    "excerpt": result.get("document", "")[:1200],
+                    "paper_id": pid,
+                    "title": title,
+                    "authors": graph_meta.get("authors", []),
+                    "concepts": graph_meta.get("concepts", []),
+                    "categories": graph_meta.get("categories", []),
+                    "abstract": abstract,
+                    "text_payload": text_payload,
                 }
-                for result in vector_results
-                if result.get("paper_id") is not None
+            )
+            pairs_to_score.append((user_query, text_payload))
+
+        # Compute neural relevance scores
+        scores = self.reranker.predict(pairs_to_score)
+
+        for idx, score in enumerate(scores):
+            candidate_payloads[idx]["score"] = float(score)
+
+        # Sort candidates by Cross-Encoder score descending
+        candidate_payloads.sort(key=lambda x: x["score"], reverse=True)
+        top_reranked = candidate_payloads[:5]
+
+        source_ids = {item["paper_id"] for item in top_reranked}
+        print(f"[Reranker] Selected top {len(top_reranked)} highest scoring papers.")
+
+        retrieval_debug = {
+            "fused_candidate_count": len(fused_ids),
+            "reranked_papers": [
+                {"paper_id": p["paper_id"], "title": p["title"], "score": p["score"]}
+                for p in top_reranked
             ],
         }
 
         return {
-            "graph_results": graph_results,
-            "graph_queries": graph_queries,
-            "vector_results": vector_results,
+            "reranked_evidence": top_reranked,
             "source_ids": source_ids,
-            "retrieval": retrieval,
+            "retrieval": retrieval_debug,
         }
 
-    def _node_synthesize_answer(self, state: ScholarGraphState) -> dict[str, Any]:
-        """Node 3: Synthesizes structured, grounded answer with mandatory citation verification."""
+    def _node_synthesis(self, state: ScholarGraphState) -> dict[str, Any]:
+        """Node 7: Synthesizes final response grounded exclusively in reranked evidence."""
         user_query = state["user_query"]
         conversation_history = state.get("conversation_history") or []
+        evidence = state["reranked_evidence"]
         source_ids = state["source_ids"]
-        graph_results = state["graph_results"]
-        vector_results = state["vector_results"]
         retrieval = state["retrieval"]
 
-        print("[LangGraph: synthesize_answer] Synthesizing grounded response...")
+        print("[7. Synthesis] Generating citation-grounded response via Gemini...")
         history_context = json.dumps(conversation_history[-12:], indent=2)
 
         synthesis_prompt = f"""
-        You are ScholarGraph, an academic research assistant. Use ONLY the evidence below
-        to make factual claims. Conversation history may clarify references but is not evidence.
-        Return concise, useful findings. Every finding must cite one or more exact IDs from
-        ALLOWED SOURCE IDS. Never invent citations or add facts from your general knowledge.
-        Omit claims the retrieved evidence does not support.
+        You are ScholarGraph, an expert academic research assistant.
+        Answer the query using ONLY the reranked evidence below. Every claim MUST be supported and explicitly cite
+        the paper ID in source_ids. Never hallucinate facts or citations outside ALLOWED SOURCE IDS.
 
-        RECENT CONVERSATION (context only, not evidence):
+        CONVERSATION HISTORY (for context only):
         {history_context}
 
         USER QUERY: {user_query}
@@ -332,14 +426,10 @@ class ScholarGraphAgent:
         ALLOWED SOURCE IDS:
         {json.dumps(sorted(source_ids))}
 
-        NEO4J GRAPH RESULTS ({len(graph_results)} rows):
-        {json.dumps(graph_results, indent=2)}
+        FINAL RERANKED EVIDENCE PAYLOADS:
+        {json.dumps(evidence, indent=2)}
 
-        CHROMADB VECTOR RESULTS ({len(vector_results)} papers):
-        {json.dumps(vector_results, indent=2)}
-
-        Return the findings in the required structured response. Put the supporting paper IDs
-        in source_ids for each finding. Each source ID must appear in ALLOWED SOURCE IDS.
+        Return claims in the required grounded JSON format.
         """
 
         try:
@@ -353,7 +443,7 @@ class ScholarGraphAgent:
             )
         except Exception as error:
             raise ModelUnavailableError(
-                "Gemini is unavailable while synthesizing the retrieved evidence.",
+                "Gemini is unavailable while synthesizing response.",
                 retrieval=retrieval,
             ) from error
 
@@ -361,17 +451,17 @@ class ScholarGraphAgent:
             grounded_response = GroundedResponse.model_validate_json(response.text)
         except Exception as error:
             raise GroundingValidationError(
-                "Gemini did not return a valid evidence-backed response."
+                "Model failed to return valid evidence-backed claims."
             ) from error
 
         answer_lines = []
         for claim in grounded_response.claims:
-            unsupported_ids = set(claim.source_ids) - source_ids
-            if unsupported_ids:
+            unsupported = set(claim.source_ids) - source_ids
+            if unsupported:
                 raise GroundingValidationError(
-                    "Gemini returned citations that were not present in retrieved evidence."
+                    f"Model returned invalid source citations: {unsupported}"
                 )
-            citations = " ".join(f"[{source_id}]" for source_id in claim.source_ids)
+            citations = " ".join(f"[{sid}]" for sid in claim.source_ids)
             answer_lines.append(f"- {claim.statement} {citations}")
 
         agent_result = AgentResult(
@@ -388,13 +478,11 @@ class ScholarGraphAgent:
         user_query: str,
         conversation_history: list[dict[str, str]] | None = None,
     ) -> AgentResult:
-        """Executes the compiled LangGraph workflow state pipeline."""
+        """Executes the complete GraphRAG pipeline."""
         initial_state: ScholarGraphState = {
             "user_query": user_query,
             "conversation_history": conversation_history or [],
         }
-
-        # Invoke LangGraph
         final_state = self.app.invoke(initial_state)
         return final_state["result"]
 
@@ -403,5 +491,5 @@ class ScholarGraphAgent:
         user_query: str,
         conversation_history: list[dict[str, str]] | None = None,
     ) -> str:
-        """Convenience method returning string output for backwards compatibility."""
+        """Backwards compatible string output wrapper."""
         return self.run_with_evidence(user_query, conversation_history).answer

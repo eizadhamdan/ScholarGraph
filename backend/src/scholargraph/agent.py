@@ -2,9 +2,10 @@
 import json
 import re
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, TypedDict
 
 from google import genai
+from langgraph.graph import END, START, StateGraph
 from pydantic import BaseModel, Field
 
 from .config import GEMINI_API_KEY
@@ -15,6 +16,11 @@ from .graph_store import (
     run_cypher_query,
 )
 from .vector_store import query_vector_store
+
+
+# =====================================================================
+# Exceptions & Data Structures
+# =====================================================================
 
 
 class InsufficientEvidenceError(RuntimeError):
@@ -45,6 +51,27 @@ class AgentResult:
     answer: str
     retrieval: dict[str, Any]
 
+
+# =====================================================================
+# LangGraph State Definition
+# =====================================================================
+
+
+class ScholarGraphState(TypedDict, total=False):
+    user_query: str
+    conversation_history: list[dict[str, str]]
+    cypher_query: str
+    graph_results: list[dict[str, Any]]
+    graph_queries: list[dict[str, Any]]
+    vector_results: list[dict[str, Any]]
+    source_ids: set[str]
+    retrieval: dict[str, Any]
+    result: AgentResult
+
+
+# =====================================================================
+# Constants & Helpers
+# =====================================================================
 
 FALLBACK_GRAPH_QUERY = """
 MATCH (p:Paper)
@@ -104,12 +131,47 @@ def _fallback_terms(user_query: str) -> list[str]:
     return list(dict.fromkeys(terms))[:10]
 
 
+# =====================================================================
+# LangGraph Agent Implementation
+# =====================================================================
+
+
 class ScholarGraphAgent:
     def __init__(self):
         self.client = genai.Client(api_key=GEMINI_API_KEY)
+        self.app = self._build_graph()
 
-    def _generate_cypher(self, user_query: str) -> str:
-        """Translates user natural language prompt into a valid Neo4j Cypher query."""
+    def _build_graph(self):
+        """Constructs and compiles the LangGraph StateGraph pipeline."""
+        workflow = StateGraph(ScholarGraphState)
+
+        # Register Nodes
+        workflow.add_node("plan_cypher", self._node_plan_cypher)
+        workflow.add_node("retrieve_evidence", self._node_retrieve_evidence)
+        workflow.add_node("synthesize_answer", self._node_synthesize_answer)
+
+        # Define Edges
+        workflow.add_edge(START, "plan_cypher")
+        workflow.add_edge("plan_cypher", "retrieve_evidence")
+        workflow.add_edge("retrieve_evidence", "synthesize_answer")
+        workflow.add_edge("synthesize_answer", END)
+
+        return workflow.compile()
+
+    # -----------------------------------------------------------------
+    # LangGraph Nodes
+    # -----------------------------------------------------------------
+
+    def _node_plan_cypher(self, state: ScholarGraphState) -> dict[str, Any]:
+        """Node 1: Validates database connectivity and plans Cypher query via LLM."""
+        if not check_graph_connection():
+            raise GraphUnavailableError(
+                "Neo4j is unavailable; refusing to generate a response."
+            )
+
+        user_query = state["user_query"]
+        print(f"\n[LangGraph: plan_cypher] Analyzing query: '{user_query}'...")
+
         schema_prompt = """
         You are a Cypher query generator for a Neo4j database with the following schema:
         - Nodes:
@@ -128,44 +190,30 @@ class ScholarGraphAgent:
         """
         try:
             response = self.client.models.generate_content(
-                model="gemini-3.5-flash-lite",
+                model="gemini-3.6-flash",
                 contents=f"{schema_prompt}\nUser Query: {user_query}",
             )
         except Exception as error:
             raise ModelUnavailableError(
                 "Gemini is unavailable while planning the graph query."
             ) from error
-        return response.text.replace("```cypher", "").replace("```", "").strip()
 
-    def run(
-        self,
-        user_query: str,
-        conversation_history: list[dict[str, str]] | None = None,
-    ) -> str:
-        return self.run_with_evidence(user_query, conversation_history).answer
-
-    def run_with_evidence(
-        self,
-        user_query: str,
-        conversation_history: list[dict[str, str]] | None = None,
-    ) -> AgentResult:
-        """Agent execution flow routing between Cypher graph traversal, vector search, and answer synthesis."""
-        if not check_graph_connection():
-            raise GraphUnavailableError(
-                "Neo4j is unavailable; refusing to generate a response."
-            )
-
-        print(f"\n[Agent Thinking] Analyzing query: '{user_query}'...")
-
-        # Step 1: Execute Graph Search
-        cypher = self._generate_cypher(user_query)
+        cypher = response.text.replace("```cypher", "").replace("```", "").strip()
         print(f"[Graph Tool] Generated Cypher:\n  {cypher}")
+        return {"cypher_query": cypher}
+
+    def _node_retrieve_evidence(self, state: ScholarGraphState) -> dict[str, Any]:
+        """Node 2: Fetches evidence from Neo4j (Graph) and ChromaDB (Vector store)."""
+        user_query = state["user_query"]
+        cypher = state["cypher_query"]
+
         primary_query_error = None
         try:
             graph_results = run_cypher_query(cypher)
         except GraphQueryError as error:
             graph_results = []
             primary_query_error = str(error)
+
         print(f"[Graph Tool] Retrieved {len(graph_results)} graph rows.")
         graph_queries = [
             {
@@ -175,6 +223,8 @@ class ScholarGraphAgent:
                 "error": primary_query_error,
             }
         ]
+
+        # Keyword Fallback search if primary Cypher yielded no rows
         if not graph_results:
             terms = _fallback_terms(user_query)
             if terms:
@@ -196,11 +246,12 @@ class ScholarGraphAgent:
                         f"{len(graph_results)} graph rows."
                     )
 
-        # Step 2: Execute Vector Search
+        # Vector Store Search
         print("[Vector Tool] Executing semantic search on ChromaDB...")
         vector_results = query_vector_store(user_query, n_results=5)
         print(f"[Vector Tool] Retrieved {len(vector_results)} paper abstracts.")
 
+        # Serialize & Extract allowed Source IDs for grounding verification
         graph_results = json.loads(json.dumps(graph_results, default=str))
         vector_results = json.loads(json.dumps(vector_results, default=str))
         source_ids = {
@@ -228,8 +279,44 @@ class ScholarGraphAgent:
                 "Retrieved data did not contain source IDs that can be cited."
             )
 
-        # Step 3: Synthesis Phase
-        history_context = json.dumps((conversation_history or [])[-12:], indent=2)
+        retrieval = {
+            "graph_queries": graph_queries,
+            "graph_result_count": len(graph_results),
+            "graph_records": graph_results[:20],
+            "graph_results_truncated": len(graph_results) > 20,
+            "vector_hit_count": len(vector_results),
+            "vector_sources": [
+                {
+                    "paper_id": str(result["paper_id"]),
+                    "title": result.get("metadata", {}).get("title"),
+                    "published": result.get("metadata", {}).get("published"),
+                    "excerpt": result.get("document", "")[:1200],
+                }
+                for result in vector_results
+                if result.get("paper_id") is not None
+            ],
+        }
+
+        return {
+            "graph_results": graph_results,
+            "graph_queries": graph_queries,
+            "vector_results": vector_results,
+            "source_ids": source_ids,
+            "retrieval": retrieval,
+        }
+
+    def _node_synthesize_answer(self, state: ScholarGraphState) -> dict[str, Any]:
+        """Node 3: Synthesizes structured, grounded answer with mandatory citation verification."""
+        user_query = state["user_query"]
+        conversation_history = state.get("conversation_history") or []
+        source_ids = state["source_ids"]
+        graph_results = state["graph_results"]
+        vector_results = state["vector_results"]
+        retrieval = state["retrieval"]
+
+        print("[LangGraph: synthesize_answer] Synthesizing grounded response...")
+        history_context = json.dumps(conversation_history[-12:], indent=2)
+
         synthesis_prompt = f"""
         You are ScholarGraph, an academic research assistant. Use ONLY the evidence below
         to make factual claims. Conversation history may clarify references but is not evidence.
@@ -255,14 +342,21 @@ class ScholarGraphAgent:
         in source_ids for each finding. Each source ID must appear in ALLOWED SOURCE IDS.
         """
 
-        response = self.client.models.generate_content(
-            model="gemini-3.6-flash",
-            contents=synthesis_prompt,
-            config={
-                "response_mime_type": "application/json",
-                "response_schema": GroundedResponse,
-            },
-        )
+        try:
+            response = self.client.models.generate_content(
+                model="gemini-3.6-flash",
+                contents=synthesis_prompt,
+                config={
+                    "response_mime_type": "application/json",
+                    "response_schema": GroundedResponse,
+                },
+            )
+        except Exception as error:
+            raise ModelUnavailableError(
+                "Gemini is unavailable while synthesizing the retrieved evidence.",
+                retrieval=retrieval,
+            ) from error
+
         try:
             grounded_response = GroundedResponse.model_validate_json(response.text)
         except Exception as error:
@@ -280,35 +374,34 @@ class ScholarGraphAgent:
             citations = " ".join(f"[{source_id}]" for source_id in claim.source_ids)
             answer_lines.append(f"- {claim.statement} {citations}")
 
-        retrieval = {
-            "graph_queries": graph_queries,
-            "graph_result_count": len(graph_results),
-            "graph_records": graph_results[:20],
-            "graph_results_truncated": len(graph_results) > 20,
-            "vector_hit_count": len(vector_results),
-            "vector_sources": [
-                {
-                    "paper_id": str(result["paper_id"]),
-                    "title": result.get("metadata", {}).get("title"),
-                    "published": result.get("metadata", {}).get("published"),
-                    "excerpt": result.get("document", "")[:1200],
-                }
-                for result in vector_results
-                if result.get("paper_id") is not None
-            ],
+        agent_result = AgentResult(
+            answer="\n\n".join(answer_lines), retrieval=retrieval
+        )
+        return {"result": agent_result}
+
+    # -----------------------------------------------------------------
+    # Public Execution Interfaces
+    # -----------------------------------------------------------------
+
+    def run_with_evidence(
+        self,
+        user_query: str,
+        conversation_history: list[dict[str, str]] | None = None,
+    ) -> AgentResult:
+        """Executes the compiled LangGraph workflow state pipeline."""
+        initial_state: ScholarGraphState = {
+            "user_query": user_query,
+            "conversation_history": conversation_history or [],
         }
-        try:
-            response = self.client.models.generate_content(
-                model="gemini-3.5-flash-lite",
-                contents=synthesis_prompt,
-                config={
-                    "response_mime_type": "application/json",
-                    "response_schema": GroundedResponse,
-                },
-            )
-        except Exception as error:
-            raise ModelUnavailableError(
-                "Gemini is unavailable while synthesizing the retrieved evidence.",
-                retrieval=retrieval,
-            ) from error
-        return AgentResult(answer="\n\n".join(answer_lines), retrieval=retrieval)
+
+        # Invoke LangGraph
+        final_state = self.app.invoke(initial_state)
+        return final_state["result"]
+
+    def run(
+        self,
+        user_query: str,
+        conversation_history: list[dict[str, str]] | None = None,
+    ) -> str:
+        """Convenience method returning string output for backwards compatibility."""
+        return self.run_with_evidence(user_query, conversation_history).answer

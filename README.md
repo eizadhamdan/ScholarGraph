@@ -10,8 +10,8 @@ ScholarGraph connects structured paper relationships (authors, categories, and m
 
 ```text
 +----------------------------------------------------------------------------------+
-|                               PHASE 1: INGESTION                                  |
-|                                                                                   |
+|                               PHASE 1: INGESTION                                 |
+|                                                                                  |
 |  [ OpenAlex API ] ---> Fetch Metadata & Abstracts                                |
 |                           |                                                      |
 |                           +---> [ Gemini API ] --------> Extract Graph Triples   |
@@ -26,7 +26,7 @@ ScholarGraph connects structured paper relationships (authors, categories, and m
 +-----------------------------------------------------------------------------------+
 
 +-----------------------------------------------------------------------------------+
-|                        PHASE 2: LANGGRAPH ORCHESTRATION ENGINE                   |
+|                        PHASE 2: LANGGRAPH ORCHESTRATION ENGINE                    |
 |                                                                                   |
 |                                [ User Input Query ]                               |
 |                                          |                                        |
